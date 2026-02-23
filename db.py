@@ -38,6 +38,7 @@ from typing import Any
 import uuid
 
 from sqlalchemy import Column
+from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
 from sqlalchemy import Integer
 from sqlalchemy import JSON
@@ -121,6 +122,21 @@ class Product(ProductBase):
   title = Column(String)
   price = Column(Integer)  # Price in cents
   image_url = Column(String, nullable=True)
+  description = Column(String, nullable=True)
+  brand = Column(String, nullable=True, default="Flower Shop")
+  category = Column(String, nullable=True)
+  created_at = Column(
+    DateTime,
+    nullable=True,
+    default=lambda: datetime.datetime.now(datetime.timezone.utc)
+  )
+  updated_at = Column(
+    DateTime,
+    nullable=True,
+    default=lambda: datetime.datetime.now(datetime.timezone.utc),
+    onupdate=lambda: datetime.datetime.now(datetime.timezone.utc)
+  )
+  link = Column(String, nullable=True)
 
 
 class Promotion(ProductBase):
@@ -518,3 +534,42 @@ async def save_idempotency_record(
     created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
   )
   session.add(record)
+
+
+async def list_all_products(session: AsyncSession) -> list[Product]:
+  """Retrieve all products from the database.
+
+  Args:
+    session: The database session to use.
+
+  Returns:
+    A list of all Product objects.
+
+  """
+  result = await session.execute(select(Product))
+  return list(result.scalars().all())
+
+
+async def list_products_with_inventory(
+  session_products: AsyncSession,
+  session_transactions: AsyncSession
+) -> list[tuple[Product, int]]:
+  """Retrieve all products with their inventory quantities.
+
+  Args:
+    session_products: The products database session.
+    session_transactions: The transactions database session.
+
+  Returns:
+    A list of tuples containing (Product, inventory_quantity).
+    Products with no inventory record default to quantity 0.
+
+  """
+  products = await list_all_products(session_products)
+
+  # Fetch all inventory records
+  result = await session_transactions.execute(select(Inventory))
+  inventory_map = {inv.product_id: inv.quantity for inv in result.scalars().all()}
+
+  # Combine products with inventory
+  return [(product, inventory_map.get(product.id, 0)) for product in products]

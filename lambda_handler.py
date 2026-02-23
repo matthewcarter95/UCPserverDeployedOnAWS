@@ -31,6 +31,7 @@ from mangum import Mangum
 import config_lambda as config
 from exceptions import UcpError
 import generated_routes.ucp_routes
+from routes.catalog_lambda import router as catalog_router
 from routes.discovery import router as discovery_router
 from routes.order_lambda import router as order_router
 import routes.ucp_implementation_lambda
@@ -77,6 +78,7 @@ routes.ucp_implementation_lambda.apply_implementation(
   generated_routes.ucp_routes.router
 )
 app.include_router(generated_routes.ucp_routes.router)
+app.include_router(catalog_router)
 app.include_router(order_router)
 app.include_router(discovery_router)
 

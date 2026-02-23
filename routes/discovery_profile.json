@@ -44,6 +44,13 @@
         "spec": "https://ucp.dev/specification/buyer-consent",
         "schema": "https://ucp.dev/schemas/shopping/buyer_consent.json",
         "extends": "dev.ucp.shopping.checkout"
+      },
+      {
+        "name": "dev.ucp.shopping.catalog",
+        "version": "2026-01-11",
+        "spec": "https://ucp.dev/specification/catalog",
+        "schema": "https://ucp.dev/schemas/shopping/catalog.json",
+        "description": "Product catalog browsing and discovery"
       }
     ]
   },

@@ -19,6 +19,7 @@ These models extend the base UCP SDK models by combining multiple extensions
 objects used by the sample server implementation.
 """
 
+from pydantic import BaseModel
 from ucp_sdk.models.schemas.shopping.ap2_mandate import (
   CheckoutResponseWithAp2 as Ap2Checkout,
 )
@@ -84,3 +85,35 @@ UnifiedCheckout.model_rebuild()
 UnifiedCheckoutCreateRequest.model_rebuild()
 UnifiedCheckoutUpdateRequest.model_rebuild()
 UnifiedOrder.model_rebuild()
+
+
+# Catalog API models
+class ProductPrice(BaseModel):
+  """Product price for catalog API."""
+
+  value: float  # Price in dollars
+  currency: str = "USD"
+
+
+class CatalogProduct(BaseModel):
+  """Product representation for catalog API."""
+
+  id: str
+  title: str
+  description: str | None
+  price: ProductPrice
+  availability: str  # "in_stock" or "out_of_stock"
+  link: str | None
+  image_link: str | None
+  brand: str | None
+  category: str | None
+  created_at: str | None  # ISO8601
+  updated_at: str | None  # ISO8601
+
+
+class ProductListResponse(BaseModel):
+  """Response model for product list endpoint."""
+
+  success: bool = True
+  count: int
+  products: list[CatalogProduct]

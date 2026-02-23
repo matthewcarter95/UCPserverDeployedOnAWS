@@ -300,3 +300,46 @@ async def log_request(
       'payload': json.loads(json.dumps(payload, cls=DecimalEncoder)) if payload else None
     }
   )
+
+
+# Product catalog operations
+async def list_all_products() -> list[dict]:
+  """Retrieve all products from DynamoDB.
+
+  Returns:
+    A list of all product dictionaries.
+
+  """
+  table = _get_table(config.PRODUCTS_TABLE)
+  response = table.scan()
+  items = response.get('Items', [])
+  return _convert_decimals(items)
+
+
+async def list_products_with_inventory() -> list[dict]:
+  """Retrieve all products with their inventory quantities.
+
+  Returns:
+    A list of dictionaries containing product data with an 'inventory_quantity'
+    field added. Products with no inventory record default to quantity 0.
+
+  """
+  # Get all products
+  products = await list_all_products()
+
+  # Get all inventory records
+  inventory_table = _get_table(config.INVENTORY_TABLE)
+  inventory_response = inventory_table.scan()
+  inventory_items = inventory_response.get('Items', [])
+
+  # Build inventory map
+  inventory_map = {
+    item['product_id']: int(item['quantity'])
+    for item in inventory_items
+  }
+
+  # Add inventory to products
+  for product in products:
+    product['inventory_quantity'] = inventory_map.get(product['id'], 0)
+
+  return products

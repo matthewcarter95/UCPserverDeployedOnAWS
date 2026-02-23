@@ -14,6 +14,7 @@
 
 """Lambda function to initialize DynamoDB tables with sample data."""
 
+import datetime
 import json
 import boto3
 import config_lambda as config
@@ -22,13 +23,47 @@ import config_lambda as config
 def load_sample_data():
   """Load sample data into DynamoDB tables."""
   dynamodb = boto3.resource('dynamodb')
+  current_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
   # Sample products
   products_table = dynamodb.Table(config.PRODUCTS_TABLE)
   products = [
-    {'id': 'bouquet_roses', 'title': 'Bouquet of Red Roses', 'price': 3500, 'image_url': None},
-    {'id': 'bouquet_tulips', 'title': 'Bouquet of Tulips', 'price': 2500, 'image_url': None},
-    {'id': 'bouquet_mixed', 'title': 'Mixed Flower Bouquet', 'price': 4000, 'image_url': None},
+    {
+      'id': 'bouquet_roses',
+      'title': 'Bouquet of Red Roses',
+      'price': 3500,
+      'image_url': 'https://example.com/roses.jpg',
+      'description': 'Beautiful Bouquet of Red Roses',
+      'brand': 'Flower Shop',
+      'category': 'Home & Garden > Plants > Flowers',
+      'created_at': current_time,
+      'updated_at': current_time,
+      'link': None  # Will be generated dynamically by the API
+    },
+    {
+      'id': 'bouquet_tulips',
+      'title': 'Bouquet of Tulips',
+      'price': 2500,
+      'image_url': 'https://example.com/tulips.jpg',
+      'description': 'Beautiful Bouquet of Tulips',
+      'brand': 'Flower Shop',
+      'category': 'Home & Garden > Plants > Flowers',
+      'created_at': current_time,
+      'updated_at': current_time,
+      'link': None
+    },
+    {
+      'id': 'bouquet_mixed',
+      'title': 'Mixed Flower Bouquet',
+      'price': 4000,
+      'image_url': 'https://example.com/mixed.jpg',
+      'description': 'Beautiful Mixed Flower Bouquet',
+      'brand': 'Flower Shop',
+      'category': 'Home & Garden > Plants > Flowers',
+      'created_at': current_time,
+      'updated_at': current_time,
+      'link': None
+    },
   ]
   for product in products:
     products_table.put_item(Item=product)

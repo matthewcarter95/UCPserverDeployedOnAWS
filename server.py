@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi.responses import JSONResponse
 import generated_routes.ucp_routes
+from routes.catalog import router as catalog_router
 from routes.discovery import router as discovery_router
 from routes.order import router as order_router
 import routes.ucp_implementation
@@ -57,6 +58,7 @@ routes.ucp_implementation.apply_implementation(
   generated_routes.ucp_routes.router
 )
 app.include_router(generated_routes.ucp_routes.router)
+app.include_router(catalog_router)
 app.include_router(order_router)
 app.include_router(discovery_router)
 

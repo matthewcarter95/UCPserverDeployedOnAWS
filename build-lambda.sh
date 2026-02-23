@@ -24,13 +24,18 @@ cat requirements-lambda.txt > requirements.txt
 
 # Package UCP SDK
 echo "Packaging UCP SDK..."
-if [ -d "../../../../sdk/python/src/ucp_sdk" ]; then
+if [ -d "sdk/python/src/ucp_sdk" ]; then
   # Copy SDK module directly into vendor directory
+  mkdir -p vendor
+  cp -r sdk/python/src/ucp_sdk vendor/
+  echo "Successfully packaged ucp_sdk module"
+elif [ -d "../../../../sdk/python/src/ucp_sdk" ]; then
+  # Fallback to old path for compatibility
   mkdir -p vendor
   cp -r ../../../../sdk/python/src/ucp_sdk vendor/
   echo "Successfully packaged ucp_sdk module"
 else
-  echo "Error: UCP SDK not found at ../../../../sdk/python/src/ucp_sdk"
+  echo "Error: UCP SDK not found at sdk/python/src/ucp_sdk or ../../../../sdk/python/src/ucp_sdk"
   echo "Please ensure the SDK is cloned at the expected location"
   exit 1
 fi

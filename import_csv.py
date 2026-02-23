@@ -25,6 +25,7 @@ Usage:
 
 import asyncio
 import csv
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -70,15 +71,34 @@ async def import_csv_data() -> None:
 
       logger.info("Importing Products from CSV...")
       products = []
+      base_url = "http://localhost:8182"  # Default for local dev
+      current_time = datetime.datetime.now(datetime.timezone.utc)
+
       with (data_dir / "products.csv").open() as f:
         reader = csv.DictReader(f)
         for row in reader:
+          # Generate description from title if not provided
+          description = row.get("description")
+          if not description:
+            description = f"Beautiful {row['title']}"
+
+          # Use provided values or defaults for new fields
+          brand = row.get("brand", "Flower Shop")
+          category = row.get("category", "Home & Garden > Plants > Flowers")
+          link = row.get("link", f"{base_url}/products/{row['id']}")
+
           products.append(
             Product(
               id=row["id"],
               title=row["title"],
               price=int(row["price"]),
               image_url=row["image_url"],
+              description=description,
+              brand=brand,
+              category=category,
+              created_at=current_time,
+              updated_at=current_time,
+              link=link,
             )
           )
       session.add_all(products)
