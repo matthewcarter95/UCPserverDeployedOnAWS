@@ -1,0 +1,17 @@
+# Python junk
+__pycache__/
+*.py[cod]
+*.class
+
+# Large Binaries
+*.pkg
+*.zip
+*.tar.gz
+
+# OS junk
+.DS_Store
+
+# Virtual Environments
+.venv/
+venv/
+env/
