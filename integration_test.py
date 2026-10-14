@@ -1305,7 +1305,7 @@ class IntegrationTest(absltest.TestCase):
 
     order.md, Verification (Platform): Content-Digest matches the SHA-256 of
     the raw body, and the signature verifies against the key the business
-    publishes in its profile's signing_keys with the declared kid. This test
+    publishes in its profile's keys with the declared kid. This test
     IS that platform: it discovers the profile from the server and runs the
     server's own verify path over the captured delivery.
     """
@@ -1325,8 +1325,8 @@ class IntegrationTest(absltest.TestCase):
 
     with self.client:
       profile = self.client.get("/.well-known/ucp").json()
-    keys = profile.get("signing_keys")
-    self.assertTrue(keys, "profile must publish signing_keys for verifiers")
+    keys = profile.get("keys")
+    self.assertTrue(keys, "profile must publish keys for verifiers")
 
     split = urlsplit(delivered["url"])
     keyid = ucp_signing.verify_request(
@@ -1491,24 +1491,19 @@ class IntegrationTest(absltest.TestCase):
   def test_profile_publishes_the_webhook_signing_key(self) -> None:
     """The served profile publishes the webhook public key for verifiers.
 
-    signatures.md, Key Discovery: public keys live in the profile's
-    signing_keys[], a top-level sibling of `ucp` per the discovery profile
-    schema at this server's declared version (source/discovery/
-    profile_schema.json $defs/base at the 2026-08-25 pin --
-    config.get_server_version()). That schema defines no `keys` field
-    anywhere, nested or otherwise; this server must not publish one, so a
-    peer's strict 2026-08-25 verifier sees exactly the fields the schema
-    promises and nothing it does not.
+    signatures.md, Key Discovery: at 2026-08-25 public keys live in the
+    profile's top-level `keys[]` (profile.json $defs/base), a sibling of
+    `ucp`. This replaced `signing_keys[]`, which must no longer be published.
     """
     with self.client:
       profile = self.client.get("/.well-known/ucp").json()
     jwk = webhook_signer.public_jwk()
-    self.assertIn(jwk, profile.get("signing_keys", []))
+    self.assertIn(jwk, profile.get("keys", []))
+    self.assertNotIn("signing_keys", profile)
     self.assertNotIn(
       "keys",
       profile.get("ucp", {}),
-      "ucp.keys[] has no basis in the 2026-08-25 schema and must not be "
-      "published",
+      "keys[] is a top-level sibling of `ucp`, not nested inside it",
     )
 
   def test_profile_publishes_rest_service_schema(self) -> None:

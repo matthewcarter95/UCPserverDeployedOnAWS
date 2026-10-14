@@ -110,6 +110,34 @@ from ucp_sdk.models.schemas.common.types.total import (
 logger = logging.getLogger(__name__)
 
 
+def _destination_fields(dest_req: Any) -> dict[str, Any]:
+  """Return a request destination as a plain dict.
+
+  SDK 0.5.0 declares no `destinations` on the fulfillment method request
+  models, so they arrive as raw dicts (extra="allow"); older SDKs produced
+  models. Accept both.
+  """
+  if isinstance(dest_req, dict):
+    return dict(dest_req)
+  return dest_req.model_dump(exclude_none=True)
+
+
+def _shipping_destination(fields: dict[str, Any]) -> dict[str, Any]:
+  """Build a response shipping destination from request fields.
+
+  The result is validated as a ShippingDestination but returned as a dict:
+  FulfillmentMethod.destinations is typed as the base FulfillmentDestination
+  (type + id, extra="allow"), which is not a superclass of ShippingDestination
+  and so rejects ShippingDestination instances.
+  """
+  data = {k: v for k, v in fields.items() if v is not None}
+  data["id"] = data.get("id") or str(uuid.uuid4())
+  data["type"] = "shipping_address"
+  return ShippingDestinationResponse(**data).model_dump(
+    mode="json", exclude_none=True
+  )
+
+
 class CheckoutService:
   """Service for managing checkout sessions and orders."""
 
@@ -326,8 +354,9 @@ class CheckoutService:
           # Convert destinations if present (usually empty on create, but
           # handled for completeness)
           resp_destinations = []
-          if method_req.destinations:
-            for dest_req in method_req.destinations:
+          req_destinations = getattr(method_req, "destinations", None)
+          if req_destinations:
+            for dest_req in req_destinations:
               # Assuming ShippingDestinationRequest can map to Response
               # structure or needs conversion. For create, we typically accept
               # ShippingDestinationRequest inside
@@ -339,14 +368,7 @@ class CheckoutService:
               # ShippingDestinationResponse
 
               resp_destinations.append(
-                ShippingDestinationResponse(
-                  id=getattr(dest_req, "id", None) or str(uuid.uuid4()),
-                  address_country=dest_req.address_country,
-                  postal_code=dest_req.postal_code,
-                  address_region=dest_req.address_region,
-                  address_locality=dest_req.address_locality,
-                  street_address=dest_req.street_address,
-                )
+                _shipping_destination(_destination_fields(dest_req))
               )
 
           resp_methods.append(
@@ -606,10 +628,11 @@ class CheckoutService:
 
           # Handle destinations
           if method_type == "shipping":
-            if m_req.destinations:
+            req_destinations = getattr(m_req, "destinations", None)
+            if req_destinations:
               # Use provided destinations
-              for dest_req in m_req.destinations:
-                dest_data = dest_req.model_dump(exclude_none=True)
+              for dest_req in req_destinations:
+                dest_data = _destination_fields(dest_req)
 
                 # Persist addresses for known customers
                 if existing.buyer and existing.buyer.email:
@@ -621,9 +644,7 @@ class CheckoutService:
                   )
                   dest_data["id"] = saved_id
 
-                resp_destinations.append(
-                  ShippingDestinationResponse(**dest_data)
-                )
+                resp_destinations.append(_shipping_destination(dest_data))
 
             elif existing_method and existing_method.destinations:
               # Preserve existing destinations
@@ -631,14 +652,14 @@ class CheckoutService:
             elif customer_addresses:
               for addr in customer_addresses:
                 resp_destinations.append(
-                  ShippingDestinationResponse(
-                    id=addr.id,
-                    street_address=addr.street_address,
-                    address_locality=addr.city,
-                    address_region=addr.state,  # Map state to region
-                    postal_code=addr.postal_code,
-                    address_country=addr.country,
-                  )
+                  _shipping_destination({
+                    "id": addr.id,
+                    "street_address": addr.street_address,
+                    "address_locality": addr.city,
+                    "address_region": addr.state,  # Map state to region
+                    "postal_code": addr.postal_code,
+                    "address_country": addr.country,
+                  })
                 )
 
           # Handle groups
@@ -814,11 +835,11 @@ class CheckoutService:
             for dest in method.destinations:
               if dest.id == method.selected_destination_id:
                 selected_dest = PostalAddress(
-                  street_address=dest.street_address,
-                  address_locality=dest.address_locality,
-                  address_region=dest.address_region,
-                  postal_code=dest.postal_code,
-                  address_country=dest.address_country,
+                  street_address=getattr(dest, "street_address", None),
+                  address_locality=getattr(dest, "address_locality", None),
+                  address_region=getattr(dest, "address_region", None),
+                  postal_code=getattr(dest, "postal_code", None),
+                  address_country=getattr(dest, "address_country", None),
                 )
                 break
 
@@ -1260,7 +1281,7 @@ class CheckoutService:
           if selected_dest:
             logger.info(
               "Calculating options for country: %s (dest_id: %s)",
-              selected_dest.address_country,
+              getattr(selected_dest, "address_country", None),
               method.selected_destination_id,
             )
             # Log all available destinations for debugging
@@ -1268,17 +1289,20 @@ class CheckoutService:
               logger.info(
                 "Available destinations in method %s: %s",
                 method.id,
-                [f"{d.id} ({d.address_country})" for d in method.destinations],
+                [
+                  f"{d.id} ({getattr(d, 'address_country', None)})"
+                  for d in method.destinations
+                ],
               )
             try:
               # Map ShippingDestination to PostalAddress for service call
               # Using strong types from SDK
               address_obj = PostalAddress(
-                street_address=selected_dest.street_address,
-                address_locality=selected_dest.address_locality,
-                address_region=selected_dest.address_region,
-                postal_code=selected_dest.postal_code,
-                address_country=selected_dest.address_country,
+                street_address=getattr(selected_dest, "street_address", None),
+                address_locality=getattr(selected_dest, "address_locality", None),
+                address_region=getattr(selected_dest, "address_region", None),
+                postal_code=getattr(selected_dest, "postal_code", None),
+                address_country=getattr(selected_dest, "address_country", None),
               )
 
               # Get options from service

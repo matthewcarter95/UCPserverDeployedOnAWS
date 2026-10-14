@@ -35,7 +35,9 @@ from ucp_sdk.models.schemas.shopping.discount import (
 )
 from ucp_sdk.models.schemas.shopping.fulfillment import (
   Checkout as FulfillmentCheckout,
-  Fulfillment,
+)
+from ucp_sdk.models.schemas.shopping.types.fulfillment_update_request import (
+  FulfillmentUpdateRequest,
 )
 from ucp_sdk.models.schemas.shopping.types.fulfillment_create_request import (
   FulfillmentCreateRequest,
@@ -112,7 +114,7 @@ class UnifiedCheckoutCreateRequest(CheckoutCreateRequest):
 class UnifiedCheckoutUpdateRequest(CheckoutUpdateRequest):
   """Update request model combining base fields and extensions."""
 
-  fulfillment: Fulfillment | None = None
+  fulfillment: FulfillmentUpdateRequest | None = None
   discounts: DiscountsObject | None = None
   buyer_consent: Any | None = None
 
