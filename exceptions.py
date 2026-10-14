@@ -14,17 +14,42 @@
 
 """Custom exceptions for the UCP Merchant Server."""
 
+from pydantic import BaseModel
+
+from enums import ErrorSeverity, MessageType
+
+
+class UcpMessageError(BaseModel):
+  """Details of a single error, matching message_error.json schema."""
+
+  type: MessageType = MessageType.ERROR
+  code: str
+  content: str
+  severity: ErrorSeverity
+
+
+class UcpErrorResponse(BaseModel):
+  """Top-level error response payload, matching error_response.json schema."""
+
+  ucp: dict  # Will contain {"version": ..., "status": "error"}
+  messages: list[UcpMessageError]
+
 
 class UcpError(Exception):
   """Base class for all UCP exceptions."""
 
   def __init__(
-    self, message: str, code: str = "INTERNAL_ERROR", status_code: int = 500
+    self,
+    message: str,
+    code: str = "INTERNAL_ERROR",
+    status_code: int = 500,
+    severity: ErrorSeverity = ErrorSeverity.UNRECOVERABLE,
   ):
     """Initialize UcpError."""
     self.message = message
     self.code = code
     self.status_code = status_code
+    self.severity = severity
     super().__init__(self.message)
 
 
@@ -33,7 +58,12 @@ class ResourceNotFoundError(UcpError):
 
   def __init__(self, message: str):
     """Initialize ResourceNotFoundError."""
-    super().__init__(message, code="RESOURCE_NOT_FOUND", status_code=404)
+    super().__init__(
+      message,
+      code="RESOURCE_NOT_FOUND",
+      status_code=404,
+      severity=ErrorSeverity.UNRECOVERABLE,
+    )
 
 
 class IdempotencyConflictError(UcpError):
@@ -41,7 +71,12 @@ class IdempotencyConflictError(UcpError):
 
   def __init__(self, message: str):
     """Initialize IdempotencyConflictError."""
-    super().__init__(message, code="IDEMPOTENCY_CONFLICT", status_code=409)
+    super().__init__(
+      message,
+      code="IDEMPOTENCY_CONFLICT",
+      status_code=409,
+      severity=ErrorSeverity.UNRECOVERABLE,
+    )
 
 
 class CheckoutNotModifiableError(UcpError):
@@ -49,7 +84,12 @@ class CheckoutNotModifiableError(UcpError):
 
   def __init__(self, message: str):
     """Initialize CheckoutNotModifiableError."""
-    super().__init__(message, code="CHECKOUT_NOT_MODIFIABLE", status_code=409)
+    super().__init__(
+      message,
+      code="CHECKOUT_NOT_MODIFIABLE",
+      status_code=409,
+      severity=ErrorSeverity.UNRECOVERABLE,
+    )
 
 
 class OutOfStockError(UcpError):
@@ -57,17 +97,30 @@ class OutOfStockError(UcpError):
 
   def __init__(self, message: str, status_code: int = 400):
     """Initialize OutOfStockError."""
-    super().__init__(message, code="OUT_OF_STOCK", status_code=status_code)
+    super().__init__(
+      message,
+      code="OUT_OF_STOCK",
+      status_code=status_code,
+      severity=ErrorSeverity.UNRECOVERABLE,
+    )
 
 
 class PaymentFailedError(UcpError):
   """Raised when payment processing fails."""
 
   def __init__(
-    self, message: str, code: str = "PAYMENT_FAILED", status_code: int = 402
+    self,
+    message: str,
+    code: str = "PAYMENT_FAILED",
+    status_code: int = 402,
   ):
     """Initialize PaymentFailedError."""
-    super().__init__(message, code=code, status_code=status_code)
+    super().__init__(
+      message,
+      code=code,
+      status_code=status_code,
+      severity=ErrorSeverity.REQUIRES_BUYER_INPUT,
+    )
 
 
 class InvalidRequestError(UcpError):
@@ -75,4 +128,25 @@ class InvalidRequestError(UcpError):
 
   def __init__(self, message: str):
     """Initialize InvalidRequestError."""
-    super().__init__(message, code="INVALID_REQUEST", status_code=400)
+    super().__init__(
+      message,
+      code="INVALID_REQUEST",
+      status_code=400,
+      severity=ErrorSeverity.UNRECOVERABLE,
+    )
+
+
+class UcpVersionError(UcpError):
+  """Raised when a UCP version string is invalid or unsupported."""
+
+  def __init__(
+    self,
+    message: str,
+    code: str = "VERSION_INVALID_FORMAT",
+    status_code: int = 422,
+    severity: ErrorSeverity = ErrorSeverity.UNRECOVERABLE,
+  ):
+    """Initialize UcpVersionError."""
+    super().__init__(
+      message, code=code, status_code=status_code, severity=severity
+    )

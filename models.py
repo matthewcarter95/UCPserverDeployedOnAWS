@@ -19,43 +19,65 @@ These models extend the base UCP SDK models by combining multiple extensions
 objects used by the sample server implementation.
 """
 
-from pydantic import BaseModel
-from ucp_sdk.models.schemas.shopping.ap2_mandate import (
-  CheckoutResponseWithAp2 as Ap2Checkout,
+from typing import Any
+from pydantic import model_validator
+from ucp_sdk.models.schemas.shopping.types.line_item_create_request import (
+  LineItemCreateRequest,
 )
-from ucp_sdk.models.schemas.shopping.buyer_consent_create_req import (
-  Checkout as BuyerConsentCheckoutCreate,
-)
-from ucp_sdk.models.schemas.shopping.buyer_consent_resp import (
+from ucp_sdk.models.schemas.common.payment_ap2_mandate import Checkout as Ap2Checkout
+from ucp_sdk.models.schemas.shopping.buyer_consent import (
   Checkout as BuyerConsentCheckoutResp,
 )
-from ucp_sdk.models.schemas.shopping.buyer_consent_update_req import (
-  Checkout as BuyerConsentCheckoutUpdate,
-)
-from ucp_sdk.models.schemas.shopping.discount_create_req import (
-  Checkout as DiscountCheckoutCreate,
-)
-from ucp_sdk.models.schemas.shopping.discount_resp import (
+from ucp_sdk.models.schemas.shopping.discount import (
   Checkout as DiscountCheckoutResp,
+  DiscountsObject,
+  Cart as DiscountCart,
 )
-from ucp_sdk.models.schemas.shopping.discount_update_req import (
-  Checkout as DiscountCheckoutUpdate,
-)
-from ucp_sdk.models.schemas.shopping.fulfillment_create_req import (
-  Checkout as FulfillmentCreateRequest,
-)
-from ucp_sdk.models.schemas.shopping.fulfillment_resp import (
+from ucp_sdk.models.schemas.shopping.fulfillment import (
   Checkout as FulfillmentCheckout,
+  Fulfillment,
 )
-from ucp_sdk.models.schemas.shopping.fulfillment_update_req import (
-  Checkout as FulfillmentUpdateRequest,
+from ucp_sdk.models.schemas.shopping.types.fulfillment_create_request import (
+  FulfillmentCreateRequest,
 )
+
 from ucp_sdk.models.schemas.shopping.order import Order
-from ucp_sdk.models.schemas.shopping.order import PlatformConfig
+from ucp_sdk.models.schemas.shopping.order import PlatformSchema
+
+from ucp_sdk.models.schemas.shopping.checkout_create_request import (
+  CheckoutCreateRequest,
+)
+from ucp_sdk.models.schemas.shopping.checkout_update_request import (
+  CheckoutUpdateRequest,
+)
+from ucp_sdk.models.schemas.shopping.cart_create_request import (
+  CartCreateRequest,
+)
+from ucp_sdk.models.schemas.shopping.cart_update_request import (
+  CartUpdateRequest,
+)
 
 
 class UnifiedOrder(Order):
   """Order model supporting extensions."""
+
+
+class UnifiedCart(DiscountCart):
+  """Cart model supporting Discount extension."""
+
+  pass
+
+
+class UnifiedCartCreateRequest(CartCreateRequest):
+  """Cart create request supporting Discount extension."""
+
+  discounts: DiscountsObject | None = None
+
+
+class UnifiedCartUpdateRequest(CartUpdateRequest):
+  """Cart update request supporting Discount extension."""
+
+  discounts: DiscountsObject | None = None
 
 
 class UnifiedCheckout(
@@ -66,54 +88,39 @@ class UnifiedCheckout(
 ):
   """Checkout model supporting various extensions."""
 
-  platform: PlatformConfig | None = None
+  platform: PlatformSchema | None = None
+  cart_id: str | None = None
 
 
-class UnifiedCheckoutCreateRequest(
-  FulfillmentCreateRequest, DiscountCheckoutCreate, BuyerConsentCheckoutCreate
-):
+class UnifiedCheckoutCreateRequest(CheckoutCreateRequest):
   """Create request model combining base fields and extensions."""
 
+  line_items: list[LineItemCreateRequest] | None = None
+  fulfillment: FulfillmentCreateRequest | None = None
+  discounts: DiscountsObject | None = None
+  buyer_consent: Any | None = None
+  cart_id: str | None = None
 
-class UnifiedCheckoutUpdateRequest(
-  FulfillmentUpdateRequest, DiscountCheckoutUpdate, BuyerConsentCheckoutUpdate
-):
+  @model_validator(mode="after")
+  def validate_cart_id_or_line_items(self) -> "UnifiedCheckoutCreateRequest":
+    """Validate that either cart_id or line_items is provided."""
+    if not self.cart_id and not self.line_items:
+      raise ValueError("Either cart_id or line_items must be provided")
+    return self
+
+
+class UnifiedCheckoutUpdateRequest(CheckoutUpdateRequest):
   """Update request model combining base fields and extensions."""
+
+  fulfillment: Fulfillment | None = None
+  discounts: DiscountsObject | None = None
+  buyer_consent: Any | None = None
 
 
 UnifiedCheckout.model_rebuild()
 UnifiedCheckoutCreateRequest.model_rebuild()
 UnifiedCheckoutUpdateRequest.model_rebuild()
+UnifiedCart.model_rebuild()
+UnifiedCartCreateRequest.model_rebuild()
+UnifiedCartUpdateRequest.model_rebuild()
 UnifiedOrder.model_rebuild()
-
-
-# Catalog API models
-class ProductPrice(BaseModel):
-  """Product price for catalog API."""
-
-  value: float  # Price in dollars
-  currency: str = "USD"
-
-
-class CatalogProduct(BaseModel):
-  """Product representation for catalog API."""
-
-  id: str
-  title: str
-  description: str | None
-  price: ProductPrice
-  availability: str  # "in_stock" or "out_of_stock"
-  link: str | None
-  image_link: str | None
-  brand: str | None
-  category: str | None
-  created_at: str | None  # ISO8601
-  updated_at: str | None  # ISO8601
-
-
-class ProductListResponse(BaseModel):
-  """Response model for product list endpoint."""
-
-  success: bool = True
-  count: int
-  products: list[CatalogProduct]

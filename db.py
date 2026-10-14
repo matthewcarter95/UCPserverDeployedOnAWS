@@ -38,8 +38,8 @@ from typing import Any
 import uuid
 
 from sqlalchemy import Column
-from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
+from sqlalchemy import func
 from sqlalchemy import Integer
 from sqlalchemy import JSON
 from sqlalchemy import select
@@ -122,21 +122,6 @@ class Product(ProductBase):
   title = Column(String)
   price = Column(Integer)  # Price in cents
   image_url = Column(String, nullable=True)
-  description = Column(String, nullable=True)
-  brand = Column(String, nullable=True, default="Flower Shop")
-  category = Column(String, nullable=True)
-  created_at = Column(
-    DateTime,
-    nullable=True,
-    default=lambda: datetime.datetime.now(datetime.timezone.utc)
-  )
-  updated_at = Column(
-    DateTime,
-    nullable=True,
-    default=lambda: datetime.datetime.now(datetime.timezone.utc),
-    onupdate=lambda: datetime.datetime.now(datetime.timezone.utc)
-  )
-  link = Column(String, nullable=True)
 
 
 class Promotion(ProductBase):
@@ -196,6 +181,15 @@ class CheckoutSession(TransactionBase):
   id = Column(String, primary_key=True)
   status = Column(String)
   # SQLAlchemy JSON type handles serialization automatically
+  data = Column(JSON)
+
+
+class CartSession(TransactionBase):
+  """Cart session database model."""
+
+  __tablename__ = "carts"
+
+  id = Column(String, primary_key=True)
   data = Column(JSON)
 
 
@@ -304,7 +298,10 @@ async def get_discount(session: AsyncSession, code: str) -> Discount | None:
     The Discount object if found, otherwise None.
 
   """
-  return await session.get(Discount, code)
+  result = await session.execute(
+    select(Discount).where(func.upper(Discount.code) == code.upper())
+  )
+  return result.scalars().first()
 
 
 async def get_discounts_by_codes(
@@ -321,7 +318,9 @@ async def get_discounts_by_codes(
 
   """
   result = await session.execute(
-    select(Discount).where(Discount.code.in_(codes))
+    select(Discount).where(
+      func.upper(Discount.code).in_([c.upper() for c in codes])
+    )
   )
   return list(result.scalars().all())
 
@@ -471,6 +470,48 @@ async def get_checkout_session(
   return None
 
 
+async def save_cart(
+  session: AsyncSession,
+  cart_id: str,
+  cart_obj: dict[str, Any],
+) -> None:
+  """Save or update a cart session."""
+  existing = await session.get(CartSession, cart_id)
+  if existing:
+    existing.data = cart_obj
+  else:
+    new_cart = CartSession(id=cart_id, data=cart_obj)
+    session.add(new_cart)
+
+
+async def get_cart_session(
+  session: AsyncSession, cart_id: str
+) -> dict[str, Any] | None:
+  """Retrieve a cart session by ID."""
+  result = await session.get(CartSession, cart_id)
+  if result:
+    return result.data
+  return None
+
+
+async def delete_cart_session(session: AsyncSession, cart_id: str) -> None:
+  """Delete a cart session by ID."""
+  existing = await session.get(CartSession, cart_id)
+  if existing:
+    await session.delete(existing)
+
+
+async def get_checkouts_by_cart_id(
+  session: AsyncSession, cart_id: str
+) -> list[dict[str, Any]]:
+  """Retrieve all checkout sessions by cart ID."""
+  stmt = select(CheckoutSession).where(
+    CheckoutSession.data["cart_id"].as_string() == cart_id
+  )
+  result = await session.execute(stmt)
+  return [r.data for r in result.scalars().all()]
+
+
 async def save_order(
   session: AsyncSession, order_id: str, order_obj: dict[str, Any]
 ) -> None:
@@ -534,42 +575,3 @@ async def save_idempotency_record(
     created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
   )
   session.add(record)
-
-
-async def list_all_products(session: AsyncSession) -> list[Product]:
-  """Retrieve all products from the database.
-
-  Args:
-    session: The database session to use.
-
-  Returns:
-    A list of all Product objects.
-
-  """
-  result = await session.execute(select(Product))
-  return list(result.scalars().all())
-
-
-async def list_products_with_inventory(
-  session_products: AsyncSession,
-  session_transactions: AsyncSession
-) -> list[tuple[Product, int]]:
-  """Retrieve all products with their inventory quantities.
-
-  Args:
-    session_products: The products database session.
-    session_transactions: The transactions database session.
-
-  Returns:
-    A list of tuples containing (Product, inventory_quantity).
-    Products with no inventory record default to quantity 0.
-
-  """
-  products = await list_all_products(session_products)
-
-  # Fetch all inventory records
-  result = await session_transactions.execute(select(Inventory))
-  inventory_map = {inv.product_id: inv.quantity for inv in result.scalars().all()}
-
-  # Combine products with inventory
-  return [(product, inventory_map.get(product.id, 0)) for product in products]

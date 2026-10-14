@@ -19,76 +19,101 @@
 from __future__ import annotations
 
 from pydantic import AnyUrl, BaseModel, ConfigDict
-from .types import (
-  adjustment,
-  expectation,
-  fulfillment_event,
-  order_line_item,
-  total_resp,
-)
-from ..._internal import ResponseOrder
+
+from .. import ucp as ucp_1
+from ..common.types import message, policy
+from ..common.types import totals as totals_1
+from .types import adjustment
+from .types import attribution as attribution_1
+from .types import expectation, fulfillment_event, order_line_item
 
 
-class PlatformConfig(BaseModel):
-  """Platform's order capability configuration."""
+class PlatformSchema(BaseModel):
+    """
+    Platform's order capability configuration.
+    """
 
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  webhook_url: AnyUrl
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    webhook_url: AnyUrl
+    """
     URL where merchant sends order lifecycle events (webhooks).
     """
 
 
 class Fulfillment(BaseModel):
-  """Fulfillment data: buyer expectations and what actually happened."""
+    """
+    Fulfillment data: buyer expectations and what actually happened.
+    """
 
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  expectations: list[expectation.Expectation] | None = None
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    expectations: list[expectation.Expectation] | None = None
+    """
     Buyer-facing groups representing when/how items will be delivered. Can be split, merged, or adjusted post-order.
     """
-  events: list[fulfillment_event.FulfillmentEvent] | None = None
-  """
+    events: list[fulfillment_event.FulfillmentEvent] | None = None
+    """
     Append-only event log of actual shipments. Each event references line items by ID.
     """
 
 
 class Order(BaseModel):
-  """Order schema with immutable line items, buyer-facing fulfillment expectations, and append-only event logs."""
+    """
+    Order schema with line items, buyer-facing fulfillment expectations, and event logs.
+    """
 
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  ucp: ResponseOrder
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    ucp: ucp_1.UcpMetadata
+    id: str
+    """
     Unique order identifier.
     """
-  checkout_id: str
-  """
+    label: str | None = None
+    """
+    Human-readable label for identifying the order. MUST only be provided by the business.
+    """
+    checkout_id: str
+    """
     Associated checkout ID for reconciliation.
     """
-  permalink_url: AnyUrl
-  """
+    permalink_url: AnyUrl
+    """
     Permalink to access the order on merchant site.
     """
-  line_items: list[order_line_item.OrderLineItem]
-  """
-    Immutable line items — source of truth for what was ordered.
+    line_items: list[order_line_item.OrderLineItem]
     """
-  fulfillment: Fulfillment
-  """
+    Line items representing what was purchased — can change post-order via edits or exchanges.
+    """
+    fulfillment: Fulfillment
+    """
     Fulfillment data: buyer expectations and what actually happened.
     """
-  adjustments: list[adjustment.Adjustment] | None = None
-  """
-    Append-only event log of money movements (refunds, returns, credits, disputes, cancellations, etc.) that exist independently of fulfillment.
+    adjustments: list[adjustment.Adjustment] | None = None
     """
-  totals: list[total_resp.TotalResponse]
-  """
+    Post-order events (refunds, returns, credits, disputes, cancellations, etc.) that exist independently of fulfillment.
+    """
+    currency: str
+    """
+    ISO 4217 currency code. MUST match the currency from the originating checkout session.
+    """
+    totals: totals_1.Totals
+    """
     Different totals for the order.
+    """
+    policies: list[policy.Policy] | None = None
+    """
+    Snapshot of the policies that applied to the items at checkout, captured on the order as a durable record. `applies_to` targets are relative to the response root.
+    """
+    messages: list[message.Message] | None = None
+    """
+    Business outcome messages (errors, warnings, informational). Present when the business needs to communicate status or issues to the platform.
+    """
+    attribution: attribution_1.Attribution | None = None
+    """
+    Snapshot of the attribution associated with the originating checkout. Read-only on the order.
     """

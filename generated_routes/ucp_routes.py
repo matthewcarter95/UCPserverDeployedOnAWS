@@ -2,26 +2,30 @@
 
 from typing import Annotated
 from fastapi import APIRouter, Body, Header
-import ucp_sdk.models.schemas.shopping.checkout_create_req
-import ucp_sdk.models.schemas.shopping.checkout_resp
-import ucp_sdk.models.schemas.shopping.checkout_update_req
+import ucp_sdk.models.schemas.shopping.cart
+import ucp_sdk.models.schemas.shopping.cart_create_request
+import ucp_sdk.models.schemas.shopping.cart_update_request
+import ucp_sdk.models.schemas.shopping.checkout_create_request
+import ucp_sdk.models.schemas.shopping.checkout
+import ucp_sdk.models.schemas.shopping.checkout_update_request
 import ucp_sdk.models.schemas.shopping.order
-import ucp_sdk.models.schemas.shopping.payment_create_req
-import ucp_sdk.models.schemas.shopping.payment_resp
+import ucp_sdk.models.schemas.common.types.payment_create_request
+import ucp_sdk.models.schemas.common.types.payment
 
 router = APIRouter()
 
 
 @router.post(
   "/checkout-sessions",
-  response_model=ucp_sdk.models.schemas.shopping.checkout_resp.CheckoutResponse,
+  response_model=ucp_sdk.models.schemas.shopping.checkout.Checkout,
+  response_model_exclude_none=True,
   status_code=201,
   operation_id="create_checkout",
   summary="Create Checkout",
 )
 async def create_checkout(
   body: Annotated[
-    ucp_sdk.models.schemas.shopping.checkout_create_req.CheckoutCreateRequest,
+    ucp_sdk.models.schemas.shopping.checkout_create_request.CheckoutCreateRequest,
     Body(...),
   ],
   authorization: str = Header(None, alias="Authorization"),
@@ -42,7 +46,8 @@ async def create_checkout(
 
 @router.get(
   "/checkout-sessions/{id}",
-  response_model=ucp_sdk.models.schemas.shopping.checkout_resp.CheckoutResponse,
+  response_model=ucp_sdk.models.schemas.shopping.checkout.Checkout,
+  response_model_exclude_none=True,
   status_code=200,
   operation_id="get_checkout",
   summary="Get Checkout",
@@ -67,7 +72,8 @@ async def get_checkout(
 
 @router.put(
   "/checkout-sessions/{id}",
-  response_model=ucp_sdk.models.schemas.shopping.checkout_resp.CheckoutResponse,
+  response_model=ucp_sdk.models.schemas.shopping.checkout.Checkout,
+  response_model_exclude_none=True,
   status_code=200,
   operation_id="update_checkout",
   summary="Update Checkout",
@@ -75,7 +81,7 @@ async def get_checkout(
 async def update_checkout(
   id: str,
   body: Annotated[
-    ucp_sdk.models.schemas.shopping.checkout_update_req.CheckoutUpdateRequest,
+    ucp_sdk.models.schemas.shopping.checkout_update_request.CheckoutUpdateRequest,
     Body(...),
   ],
   authorization: str = Header(None, alias="Authorization"),
@@ -96,7 +102,8 @@ async def update_checkout(
 
 @router.post(
   "/checkout-sessions/{id}/complete",
-  response_model=ucp_sdk.models.schemas.shopping.checkout_resp.CheckoutResponse,
+  response_model=ucp_sdk.models.schemas.shopping.checkout.Checkout,
+  response_model_exclude_none=True,
   status_code=200,
   operation_id="complete_checkout",
   summary="Complete Checkout",
@@ -122,7 +129,8 @@ async def complete_checkout(
 
 @router.post(
   "/checkout-sessions/{id}/cancel",
-  response_model=ucp_sdk.models.schemas.shopping.checkout_resp.CheckoutResponse,
+  response_model=ucp_sdk.models.schemas.shopping.checkout.Checkout,
+  response_model_exclude_none=True,
   status_code=200,
   operation_id="cancel_checkout",
   summary="Cancel Checkout",
@@ -148,6 +156,7 @@ async def cancel_checkout(
 @router.post(
   "/webhooks/partners/{partner_id}/events/order",
   response_model=dict,
+  response_model_exclude_none=True,
   status_code=200,
   operation_id="order_event_webhook",
   summary="Order Event Webhook",
@@ -159,5 +168,115 @@ async def order_event_webhook(
   x_api_key: str = Header(None, alias="X-API-Key"),
 ):
   """Order Event Webhook."""
+  # TODO: Implement logic
+  return {}
+
+
+@router.post(
+  "/carts",
+  response_model=ucp_sdk.models.schemas.shopping.cart.Cart,
+  response_model_exclude_none=True,
+  status_code=201,
+  operation_id="create_cart",
+  summary="Create Cart",
+)
+async def create_cart(
+  body: Annotated[
+    ucp_sdk.models.schemas.shopping.cart_create_request.CartCreateRequest,
+    Body(...),
+  ],
+  authorization: str = Header(None, alias="Authorization"),
+  x_api_key: str = Header(None, alias="X-API-Key"),
+  request_signature: str = Header(..., alias="Request-Signature"),
+  idempotency_key: str = Header(..., alias="Idempotency-Key"),
+  request_id: str = Header(..., alias="Request-Id"),
+  user_agent: str = Header(None, alias="User-Agent"),
+  content_type: str = Header(None, alias="Content-Type"),
+  accept: str = Header(None, alias="Accept"),
+  accept_language: str = Header(None, alias="Accept-Language"),
+  accept_encoding: str = Header(None, alias="Accept-Encoding"),
+):
+  """Create Cart."""
+  # TODO: Implement logic
+  return {}
+
+
+@router.get(
+  "/carts/{id}",
+  response_model=ucp_sdk.models.schemas.shopping.cart.Cart,
+  response_model_exclude_none=True,
+  status_code=200,
+  operation_id="get_cart",
+  summary="Get Cart",
+)
+async def get_cart(
+  id: str,
+  authorization: str = Header(None, alias="Authorization"),
+  x_api_key: str = Header(None, alias="X-API-Key"),
+  request_signature: str = Header(..., alias="Request-Signature"),
+  request_id: str = Header(..., alias="Request-Id"),
+  user_agent: str = Header(None, alias="User-Agent"),
+  content_type: str = Header(None, alias="Content-Type"),
+  accept: str = Header(None, alias="Accept"),
+  accept_language: str = Header(None, alias="Accept-Language"),
+  accept_encoding: str = Header(None, alias="Accept-Encoding"),
+):
+  """Get Cart."""
+  # TODO: Implement logic
+  return {}
+
+
+@router.put(
+  "/carts/{id}",
+  response_model=ucp_sdk.models.schemas.shopping.cart.Cart,
+  response_model_exclude_none=True,
+  status_code=200,
+  operation_id="update_cart",
+  summary="Update Cart",
+)
+async def update_cart(
+  id: str,
+  body: Annotated[
+    ucp_sdk.models.schemas.shopping.cart_update_request.CartUpdateRequest,
+    Body(...),
+  ],
+  authorization: str = Header(None, alias="Authorization"),
+  x_api_key: str = Header(None, alias="X-API-Key"),
+  request_signature: str = Header(..., alias="Request-Signature"),
+  idempotency_key: str = Header(..., alias="Idempotency-Key"),
+  request_id: str = Header(..., alias="Request-Id"),
+  user_agent: str = Header(None, alias="User-Agent"),
+  content_type: str = Header(None, alias="Content-Type"),
+  accept: str = Header(None, alias="Accept"),
+  accept_language: str = Header(None, alias="Accept-Language"),
+  accept_encoding: str = Header(None, alias="Accept-Encoding"),
+):
+  """Update Cart."""
+  # TODO: Implement logic
+  return {}
+
+
+@router.post(
+  "/carts/{id}/cancel",
+  response_model=ucp_sdk.models.schemas.shopping.cart.Cart,
+  response_model_exclude_none=True,
+  status_code=200,
+  operation_id="cancel_cart",
+  summary="Cancel Cart",
+)
+async def cancel_cart(
+  id: str,
+  authorization: str = Header(None, alias="Authorization"),
+  x_api_key: str = Header(None, alias="X-API-Key"),
+  request_signature: str = Header(..., alias="Request-Signature"),
+  idempotency_key: str = Header(..., alias="Idempotency-Key"),
+  request_id: str = Header(..., alias="Request-Id"),
+  user_agent: str = Header(None, alias="User-Agent"),
+  content_type: str = Header(None, alias="Content-Type"),
+  accept: str = Header(None, alias="Accept"),
+  accept_language: str = Header(None, alias="Accept-Language"),
+  accept_encoding: str = Header(None, alias="Accept-Encoding"),
+):
+  """Cancel Cart."""
   # TODO: Implement logic
   return {}

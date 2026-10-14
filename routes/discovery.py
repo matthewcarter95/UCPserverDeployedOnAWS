@@ -16,26 +16,33 @@
 
 import json
 import pathlib
-import uuid
 from fastapi import APIRouter
 from fastapi import Request
-from ucp_sdk.models.discovery.profile_schema import UcpDiscoveryProfile
+from fastapi import Response
+import config
+import webhook_signer
 
 router = APIRouter()
 
 PROFILE_TEMPLATE_PATH = pathlib.Path(__file__).parent / "discovery_profile.json"
 
-# Generate a unique shop ID for this server instance
-SHOP_ID = str(uuid.uuid4())
+# Profiles are stable, non-sensitive documents; the spec requires a cacheable
+# response (overview.md, Discovery: profile caching): `public` with `max-age`
+# of at least 60 seconds, and never `private`/`no-store`/`no-cache`.
+PROFILE_CACHE_CONTROL = "public, max-age=3600"
+
+# Shop ID shared with checkout responses (config.get_payment_handlers)
+SHOP_ID = config.SHOP_ID
 
 
 @router.get(
   "/.well-known/ucp",
-  response_model=UcpDiscoveryProfile,
+  response_model=dict,
   summary="Get Merchant Profile",
 )
-async def get_merchant_profile(request: Request):
+async def get_merchant_profile(request: Request, response: Response):
   """Return the merchant profile and capabilities."""
+  response.headers["Cache-Control"] = PROFILE_CACHE_CONTROL
   # Read template and perform simple substitution
   with PROFILE_TEMPLATE_PATH.open(encoding="utf-8") as f:
     template = f.read()
@@ -45,4 +52,21 @@ async def get_merchant_profile(request: Request):
     "{{ENDPOINT}}", str(request.base_url).rstrip("/")
   ).replace("{{SHOP_ID}}", SHOP_ID)
 
-  return UcpDiscoveryProfile(**json.loads(profile_json))
+  profile_data = json.loads(profile_json)
+
+  # Preserve the spec-required top-level `ucp` wrapper. The UCP discovery
+  # profile schema (discovery/profile.json) defines `$defs.base.required =
+  # ["ucp"]`, so the served body MUST be `{"ucp": {...}}`. Default
+  # payment_handlers INSIDE the ucp object rather than at the document root.
+  ucp = profile_data.setdefault("ucp", {})
+  ucp.setdefault("payment_handlers", {})
+
+  # Publish the webhook-signing public key as a JWK Set member so platforms
+  # can verify our order-event deliveries (order.md, Webhook Signature
+  # Verification / signatures.md, Key Discovery). At 2026-08-25 the canonical
+  # field is the top-level `keys[]` (profile.json $defs/base), which replaced
+  # the earlier `signing_keys[]`.
+  jwk = webhook_signer.public_jwk()
+  profile_data.setdefault("keys", []).append(jwk)
+
+  return profile_data

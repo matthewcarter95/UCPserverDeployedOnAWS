@@ -18,6 +18,159 @@
 
 from __future__ import annotations
 
-from .._internal import Base, Discovery, Response, UcpCapability
+from typing import Annotated, Any
 
-__all__ = ["Base", "Discovery", "Response", "UcpCapability"]
+from pydantic import AnyUrl, BaseModel, ConfigDict, Field
+from typing_extensions import TypeAliasType
+
+from .common.types import reverse_domain_name
+
+UcpCapability = TypeAliasType(
+    "UcpCapability", Annotated[Any, Field(..., title="UCP Capability")]
+)
+"""
+Schema for UCP capabilities and extensions. Extensions are capabilities with an 'extends' field. Uses reverse-domain naming for governance.
+"""
+
+
+Extends = TypeAliasType(
+    "Extends",
+    Annotated[
+        list[reverse_domain_name.ReverseDomainName], Field(..., min_length=1)
+    ],
+)
+"""
+Parent capability(s) this extends. Present for extensions, absent for root capabilities. Use array for multi-parent extensions.
+"""
+
+
+class Base(BaseModel):
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    version: str = Field(..., pattern="^\\d{4}-\\d{2}-\\d{2}$")
+    """
+    Entity version in YYYY-MM-DD format.
+    """
+    spec: AnyUrl | None = None
+    """
+    URL to human-readable specification document.
+    """
+    schema_: AnyUrl | None = Field(None, alias="schema")
+    """
+    URL to JSON Schema defining this entity's structure and payloads.
+    """
+    id: str | None = None
+    """
+    Unique identifier for this entity instance. Used to disambiguate when multiple instances exist.
+    """
+    config: dict[str, Any] | None = None
+    """
+    Entity-specific configuration. Structure defined by each entity's schema.
+    """
+    extends: reverse_domain_name.ReverseDomainName | Extends | None = None
+    """
+    Parent capability(s) this extends. Present for extensions, absent for root capabilities. Use array for multi-parent extensions.
+    """
+
+
+class PlatformSchema(BaseModel):
+    """
+    Full capability declaration for platform-level discovery. Includes spec/schema URLs for agent fetching.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    version: str = Field(..., pattern="^\\d{4}-\\d{2}-\\d{2}$")
+    """
+    Entity version in YYYY-MM-DD format.
+    """
+    spec: AnyUrl
+    """
+    URL to human-readable specification document.
+    """
+    schema_: AnyUrl = Field(..., alias="schema")
+    """
+    URL to JSON Schema defining this entity's structure and payloads.
+    """
+    id: str | None = None
+    """
+    Unique identifier for this entity instance. Used to disambiguate when multiple instances exist.
+    """
+    config: dict[str, Any] | None = None
+    """
+    Entity-specific configuration. Structure defined by each entity's schema.
+    """
+    extends: reverse_domain_name.ReverseDomainName | Extends | None = None
+    """
+    Parent capability(s) this extends. Present for extensions, absent for root capabilities. Use array for multi-parent extensions.
+    """
+
+
+class BusinessSchema(BaseModel):
+    """
+    Capability declaration for business/merchant discovery. Requires the `schema` URL so platforms can fetch and compose it during negotiation; may also include business-specific config overrides.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    version: str = Field(..., pattern="^\\d{4}-\\d{2}-\\d{2}$")
+    """
+    Entity version in YYYY-MM-DD format.
+    """
+    spec: AnyUrl | None = None
+    """
+    URL to human-readable specification document.
+    """
+    schema_: AnyUrl = Field(..., alias="schema")
+    """
+    URL to JSON Schema defining this entity's structure and payloads.
+    """
+    id: str | None = None
+    """
+    Unique identifier for this entity instance. Used to disambiguate when multiple instances exist.
+    """
+    config: dict[str, Any] | None = None
+    """
+    Entity-specific configuration. Structure defined by each entity's schema.
+    """
+    extends: reverse_domain_name.ReverseDomainName | Extends | None = None
+    """
+    Parent capability(s) this extends. Present for extensions, absent for root capabilities. Use array for multi-parent extensions.
+    """
+
+
+class ResponseSchema(BaseModel):
+    """
+    Capability reference in responses. Only name/version required to confirm active capabilities.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    version: str = Field(..., pattern="^\\d{4}-\\d{2}-\\d{2}$")
+    """
+    Entity version in YYYY-MM-DD format.
+    """
+    spec: AnyUrl | None = None
+    """
+    URL to human-readable specification document.
+    """
+    schema_: AnyUrl | None = Field(None, alias="schema")
+    """
+    URL to JSON Schema defining this entity's structure and payloads.
+    """
+    id: str | None = None
+    """
+    Unique identifier for this entity instance. Used to disambiguate when multiple instances exist.
+    """
+    config: dict[str, Any] | None = None
+    """
+    Entity-specific configuration. Structure defined by each entity's schema.
+    """
+    extends: reverse_domain_name.ReverseDomainName | Extends | None = None
+    """
+    Parent capability(s) this extends. Present for extensions, absent for root capabilities. Use array for multi-parent extensions.
+    """

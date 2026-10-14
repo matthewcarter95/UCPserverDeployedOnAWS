@@ -24,9 +24,22 @@ Globals:
         IDEMPOTENCY_TABLE: !Ref IdempotencyTable
         REQUEST_LOGS_TABLE: !Ref RequestLogsTable
         PAYMENT_INSTRUMENTS_TABLE: !Ref PaymentInstrumentsTable
+        CARTS_TABLE: !Ref CartsTable
 
 Resources:
   # DynamoDB Tables
+  CartsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-carts'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -257,6 +270,8 @@ Resources:
             TableName: !Ref PaymentInstrumentsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref TransactionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CartsTable
       FunctionUrlConfig:
         AuthType: NONE
         Cors:

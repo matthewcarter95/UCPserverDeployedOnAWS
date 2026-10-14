@@ -18,52 +18,61 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
-from . import item_resp, total_resp
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from ...common.types import total as total_1
+from . import item as item_1
 
 
 class Quantity(BaseModel):
-  """Quantity tracking. Both total and fulfilled are derived from events."""
-
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  total: int = Field(..., ge=0)
-  """
-    Current total quantity.
     """
-  fulfilled: int = Field(..., ge=0)
-  """
-    Quantity fulfilled (sum from fulfillment events).
+    Tracks the line item's original, current active, and fulfilled quantities. All three values use the same inherited `item.quantity_unit`. When `item.quantity_unit` is absent on an authoritative order response, each step is one whole item (`each`) under the shared default.
+    """
+
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    original: int | None = Field(None, ge=0, le=9007199254740991)
+    """
+    Quantity from the original checkout, expressed as an integer step count.
+    """
+    total: int = Field(..., ge=0, le=9007199254740991)
+    """
+    Current active quantity after returns, cancellations, or other order changes, expressed as an integer step count.
+    """
+    fulfilled: int = Field(..., ge=0, le=9007199254740991)
+    """
+    Quantity fulfilled so far, expressed as an integer step count.
     """
 
 
 class OrderLineItem(BaseModel):
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    id: str
+    """
     Line item identifier.
     """
-  item: item_resp.ItemResponse
-  """
-    Product data (id, title, price, image_url).
+    item: item_1.Item
     """
-  quantity: Quantity
-  """
-    Quantity tracking. Both total and fulfilled are derived from events.
+    Purchased item data, including identity, price, and sale basis.
     """
-  totals: list[total_resp.TotalResponse]
-  """
+    quantity: Quantity
+    """
+    Tracks the line item's original, current active, and fulfilled quantities. All three values use the same inherited `item.quantity_unit`. When `item.quantity_unit` is absent on an authoritative order response, each step is one whole item (`each`) under the shared default.
+    """
+    totals: list[total_1.Total]
+    """
     Line item totals breakdown.
     """
-  status: Literal["processing", "partial", "fulfilled"]
-  """
-    Derived status: fulfilled if quantity.fulfilled == quantity.total, partial if quantity.fulfilled > 0, otherwise processing.
+    status: Literal["processing", "partial", "fulfilled", "removed"]
     """
-  parent_id: str | None = None
-  """
+    Derived status: removed if quantity.total == 0, fulfilled if quantity.total > 0 and quantity.fulfilled == quantity.total, partial if quantity.total > 0 and quantity.fulfilled > 0, otherwise processing.
+    """
+    parent_id: str | None = None
+    """
     Parent line item identifier for any nested structures.
     """
