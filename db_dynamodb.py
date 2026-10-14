@@ -369,3 +369,224 @@ async def list_products_with_inventory() -> list[dict]:
   for p in products:
     p['inventory_quantity'] = inventory_map.get(p['id'], 0)
   return products
+
+
+# Loyalty points
+#
+# The balance lives in an existing table (config.LOYALTY_POINTS_TABLE, keyed by
+# a Number `loyaltyId`, attribute `totalPoints`) that other apps also write. All
+# of our writes are conditional and paired with a ledger row in a table we own
+# (config.LOYALTY_LEDGER_TABLE, keyed by `entry_id`) inside one transaction, so
+# a retry can never deduct or credit twice.
+
+
+def _ddb_client():
+  return config.get_dynamodb_lowlevel_client()
+
+
+def _tracker_key(loyalty_id: str) -> dict:
+  return {'loyaltyId': {'N': str(int(loyalty_id))}}
+
+
+def _is_cancelled(exc: Exception) -> list[str]:
+  """Return per-item cancellation codes for a TransactionCanceledException.
+
+  Re-raises anything else, so only failures we understand are translated.
+  """
+  response = getattr(exc, 'response', None) or {}
+  if response.get('Error', {}).get('Code') != 'TransactionCanceledException':
+    raise exc
+  return [r.get('Code', 'None') for r in response.get('CancellationReasons', [])]
+
+
+def _failed(codes: list[str], index: int) -> bool:
+  """Whether transaction item `index` failed its condition."""
+  return len(codes) > index and codes[index] == 'ConditionalCheckFailed'
+
+
+async def get_loyalty_balance(session: Any, loyalty_id: str) -> int | None:
+  """Return the points balance, or None if the account does not exist."""
+  table = _get_table(config.LOYALTY_POINTS_TABLE)
+  item = table.get_item(Key={'loyaltyId': int(loyalty_id)}).get('Item')
+  return int(item['totalPoints']) if item and 'totalPoints' in item else None
+
+
+async def reserve_loyalty_points(
+  session: Any, loyalty_id: str, points: int, entry_id: str
+) -> str:
+  """Atomically deduct points and record the reservation.
+
+  Idempotent on `entry_id`: a reserved or committed entry is left alone, and a
+  released one (an earlier attempt that failed) is reserved again.
+
+  Returns 'reserved', 'exists' or 'insufficient'.
+  """
+  now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+  entry = _get_table(config.LOYALTY_LEDGER_TABLE).get_item(
+    Key={'entry_id': entry_id}
+  ).get('Item')
+  if entry and entry.get('status') != 'released':
+    return 'exists'
+  deduct = {
+    'Update': {
+      'TableName': config.LOYALTY_POINTS_TABLE,
+      'Key': _tracker_key(loyalty_id),
+      'UpdateExpression': 'SET totalPoints = totalPoints - :p',
+      'ConditionExpression': 'totalPoints >= :p',
+      'ExpressionAttributeValues': {':p': {'N': str(points)}},
+    }
+  }
+  if entry:
+    record = {
+      'Update': {
+        'TableName': config.LOYALTY_LEDGER_TABLE,
+        'Key': {'entry_id': {'S': entry_id}},
+        'UpdateExpression': 'SET #s = :reserved, points = :p, created_at = :now',
+        'ConditionExpression': '#s = :released',
+        'ExpressionAttributeNames': {'#s': 'status'},
+        'ExpressionAttributeValues': {
+          ':reserved': {'S': 'reserved'},
+          ':released': {'S': 'released'},
+          ':p': {'N': str(points)},
+          ':now': {'S': now},
+        },
+      }
+    }
+  else:
+    record = {
+      'Put': {
+        'TableName': config.LOYALTY_LEDGER_TABLE,
+        'Item': {
+          'entry_id': {'S': entry_id},
+          'loyalty_id': {'S': str(loyalty_id)},
+          'kind': {'S': 'redeem'},
+          'points': {'N': str(points)},
+          'status': {'S': 'reserved'},
+          'created_at': {'S': now},
+        },
+        'ConditionExpression': 'attribute_not_exists(entry_id)',
+      }
+    }
+  try:
+    _ddb_client().transact_write_items(TransactItems=[deduct, record])
+    return 'reserved'
+  except Exception as exc:
+    codes = _is_cancelled(exc)
+    # Item 0 is the balance check; item 1 is a concurrent writer of this entry.
+    if _failed(codes, 0):
+      return 'insufficient'
+    if _failed(codes, 1):
+      return 'exists'
+    raise exc
+
+
+async def get_loyalty_entry(session: Any, entry_id: str) -> dict | None:
+  """Return {'points', 'status'} for a ledger entry, or None."""
+  item = _get_table(config.LOYALTY_LEDGER_TABLE).get_item(
+    Key={'entry_id': entry_id}
+  ).get('Item')
+  if not item:
+    return None
+  return {'points': int(item['points']), 'status': item['status']}
+
+
+async def release_loyalty_points(
+  session: Any, loyalty_id: str, entry_id: str
+) -> bool:
+  """Return a reservation's points to the account. No-op unless 'reserved'."""
+  ledger = _get_table(config.LOYALTY_LEDGER_TABLE)
+  entry = ledger.get_item(Key={'entry_id': entry_id}).get('Item')
+  if not entry or entry.get('status') != 'reserved':
+    return False
+  try:
+    _ddb_client().transact_write_items(
+      TransactItems=[
+        {
+          'Update': {
+            'TableName': config.LOYALTY_POINTS_TABLE,
+            'Key': _tracker_key(loyalty_id),
+            'UpdateExpression': 'SET totalPoints = totalPoints + :p',
+            'ExpressionAttributeValues': {':p': {'N': str(int(entry['points']))}},
+          }
+        },
+        {
+          'Update': {
+            'TableName': config.LOYALTY_LEDGER_TABLE,
+            'Key': {'entry_id': {'S': entry_id}},
+            'UpdateExpression': 'SET #s = :released',
+            'ConditionExpression': '#s = :reserved',
+            'ExpressionAttributeNames': {'#s': 'status'},
+            'ExpressionAttributeValues': {
+              ':released': {'S': 'released'},
+              ':reserved': {'S': 'reserved'},
+            },
+          }
+        },
+      ]
+    )
+    return True
+  except Exception as exc:
+    if _failed(_is_cancelled(exc), 1):
+      return False  # someone else already released/committed it
+    raise
+
+
+async def commit_loyalty_reservation(session: Any, entry_id: str) -> None:
+  """Mark a reservation as spent."""
+  try:
+    _get_table(config.LOYALTY_LEDGER_TABLE).update_item(
+      Key={'entry_id': entry_id},
+      UpdateExpression='SET #s = :c',
+      ConditionExpression='#s = :r',
+      ExpressionAttributeNames={'#s': 'status'},
+      ExpressionAttributeValues={':c': 'committed', ':r': 'reserved'},
+    )
+  except Exception as exc:
+    if getattr(exc, 'response', {}).get('Error', {}).get('Code') != (
+      'ConditionalCheckFailedException'
+    ):
+      raise
+
+
+async def credit_loyalty_points(
+  session: Any, loyalty_id: str, points: int, entry_id: str
+) -> bool:
+  """Add points once per entry_id. Returns False if already credited."""
+  now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+  try:
+    _ddb_client().transact_write_items(
+      TransactItems=[
+        {
+          'Update': {
+            'TableName': config.LOYALTY_POINTS_TABLE,
+            'Key': _tracker_key(loyalty_id),
+            'UpdateExpression': (
+              'SET totalPoints = if_not_exists(totalPoints, :zero) + :p'
+            ),
+            'ExpressionAttributeValues': {
+              ':p': {'N': str(points)},
+              ':zero': {'N': '0'},
+            },
+          }
+        },
+        {
+          'Put': {
+            'TableName': config.LOYALTY_LEDGER_TABLE,
+            'Item': {
+              'entry_id': {'S': entry_id},
+              'loyalty_id': {'S': str(loyalty_id)},
+              'kind': {'S': 'earn'},
+              'points': {'N': str(points)},
+              'status': {'S': 'credited'},
+              'created_at': {'S': now},
+            },
+            'ConditionExpression': 'attribute_not_exists(entry_id)',
+          }
+        },
+      ]
+    )
+    return True
+  except Exception as exc:
+    if _failed(_is_cancelled(exc), 1):
+      return False  # already credited for this entry
+    raise

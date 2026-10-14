@@ -38,6 +38,9 @@ IDEMPOTENCY_TABLE = os.environ.get('IDEMPOTENCY_TABLE', 'ucp-idempotency')
 REQUEST_LOGS_TABLE = os.environ.get('REQUEST_LOGS_TABLE', 'ucp-request-logs')
 PAYMENT_INSTRUMENTS_TABLE = os.environ.get('PAYMENT_INSTRUMENTS_TABLE', 'ucp-payment-instruments')
 CARTS_TABLE = os.environ.get('CARTS_TABLE', 'ucp-carts')
+# Existing points balance table (shared with other apps) and our ledger.
+LOYALTY_POINTS_TABLE = os.environ.get('LOYALTY_POINTS_TABLE', 'RetailLoyaltyPointsTracker')
+LOYALTY_LEDGER_TABLE = os.environ.get('LOYALTY_LEDGER_TABLE', 'ucp-loyalty-ledger')
 
 SIMULATION_SECRET = os.environ.get('SIMULATION_SECRET', str(uuid.uuid4()))
 
@@ -107,6 +110,21 @@ def get_payment_handlers() -> dict:
     json.dumps(_get_profile()).replace("{{SHOP_ID}}", SHOP_ID)
   )
   return profile["ucp"].get("payment_handlers", {})
+
+
+_lowlevel = None
+
+
+def get_dynamodb_lowlevel_client():
+  """Get a low-level DynamoDB client (explicit attribute types).
+
+  The resource's own client auto-converts Python values, so hand-typed
+  {'N': '1'} items passed through it are converted twice and rejected.
+  """
+  global _lowlevel
+  if _lowlevel is None:
+    _lowlevel = boto3.client('dynamodb')
+  return _lowlevel
 
 
 def get_dynamodb_client():

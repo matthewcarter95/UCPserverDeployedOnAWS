@@ -240,6 +240,28 @@ class PaymentInstrument(TransactionBase):
   handler_id = Column(String)
 
 
+class LoyaltyAccount(TransactionBase):
+  """Loyalty points balance for a buyer (local stand-in for DynamoDB)."""
+
+  __tablename__ = "loyalty_accounts"
+
+  loyalty_id = Column(String, primary_key=True)
+  balance = Column(Integer, nullable=False, default=0)
+
+
+class LoyaltyLedger(TransactionBase):
+  """Append-only record of points reservations and credits."""
+
+  __tablename__ = "loyalty_ledger"
+
+  entry_id = Column(String, primary_key=True)
+  loyalty_id = Column(String, nullable=False)
+  kind = Column(String, nullable=False)  # 'redeem' | 'earn'
+  points = Column(Integer, nullable=False)
+  status = Column(String, nullable=False)  # reserved|committed|released|credited
+  created_at = Column(String)
+
+
 class Discount(TransactionBase):
   """Discount database model."""
 
@@ -575,3 +597,111 @@ async def save_idempotency_record(
     created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
   )
   session.add(record)
+
+
+# --- Loyalty points ---
+
+
+async def get_loyalty_balance(
+  session: AsyncSession, loyalty_id: str
+) -> int | None:
+  """Return the points balance, or None if the account does not exist."""
+  account = await session.get(LoyaltyAccount, str(loyalty_id))
+  return account.balance if account else None
+
+
+async def reserve_loyalty_points(
+  session: AsyncSession, loyalty_id: str, points: int, entry_id: str
+) -> str:
+  """Atomically deduct points and record the reservation.
+
+  Idempotent on `entry_id`: a reserved or committed entry is left alone, and a
+  released one (an earlier attempt that failed) is reserved again.
+
+  Returns:
+    'reserved', 'exists' (already reserved/committed; nothing deducted) or
+    'insufficient'.
+  """
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if entry and entry.status != "released":
+    return "exists"
+  result = await session.execute(
+    update(LoyaltyAccount)
+    .where(LoyaltyAccount.loyalty_id == str(loyalty_id))
+    .where(LoyaltyAccount.balance >= points)
+    .values(balance=LoyaltyAccount.balance - points)
+  )
+  if result.rowcount == 0:
+    return "insufficient"
+  if entry:
+    entry.status = "reserved"
+    entry.points = points
+  else:
+    session.add(
+      LoyaltyLedger(
+        entry_id=entry_id,
+        loyalty_id=str(loyalty_id),
+        kind="redeem",
+        points=points,
+        status="reserved",
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+      )
+    )
+  return "reserved"
+
+
+async def get_loyalty_entry(
+  session: AsyncSession, entry_id: str
+) -> dict[str, Any] | None:
+  """Return {'points', 'status'} for a ledger entry, or None."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  return {"points": entry.points, "status": entry.status} if entry else None
+
+
+async def release_loyalty_points(
+  session: AsyncSession, loyalty_id: str, entry_id: str
+) -> bool:
+  """Return a reservation's points to the account. No-op unless 'reserved'."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if not entry or entry.status != "reserved":
+    return False
+  await session.execute(
+    update(LoyaltyAccount)
+    .where(LoyaltyAccount.loyalty_id == str(loyalty_id))
+    .values(balance=LoyaltyAccount.balance + entry.points)
+  )
+  entry.status = "released"
+  return True
+
+
+async def commit_loyalty_reservation(
+  session: AsyncSession, entry_id: str
+) -> None:
+  """Mark a reservation as spent."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if entry and entry.status == "reserved":
+    entry.status = "committed"
+
+
+async def credit_loyalty_points(
+  session: AsyncSession, loyalty_id: str, points: int, entry_id: str
+) -> bool:
+  """Add points once per entry_id. Returns False if already credited."""
+  if await session.get(LoyaltyLedger, entry_id):
+    return False
+  account = await session.get(LoyaltyAccount, str(loyalty_id))
+  if account:
+    account.balance += points
+  else:
+    session.add(LoyaltyAccount(loyalty_id=str(loyalty_id), balance=points))
+  session.add(
+    LoyaltyLedger(
+      entry_id=entry_id,
+      loyalty_id=str(loyalty_id),
+      kind="earn",
+      points=points,
+      status="credited",
+      created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+  )
+  return True

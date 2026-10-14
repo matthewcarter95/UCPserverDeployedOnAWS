@@ -24,7 +24,12 @@ from pydantic import model_validator
 from ucp_sdk.models.schemas.shopping.types.line_item_create_request import (
   LineItemCreateRequest,
 )
+from ucp_sdk.models.schemas.common.loyalty import Cart as LoyaltyCart
+from ucp_sdk.models.schemas.common.loyalty import Checkout as LoyaltyCheckout
 from ucp_sdk.models.schemas.common.payment_ap2_mandate import Checkout as Ap2Checkout
+from ucp_sdk.models.schemas.common.payment_split_payments import (
+  Checkout as SplitPaymentsCheckout,
+)
 from ucp_sdk.models.schemas.shopping.buyer_consent import (
   Checkout as BuyerConsentCheckoutResp,
 )
@@ -64,8 +69,8 @@ class UnifiedOrder(Order):
   """Order model supporting extensions."""
 
 
-class UnifiedCart(DiscountCart):
-  """Cart model supporting Discount extension."""
+class UnifiedCart(LoyaltyCart, DiscountCart):
+  """Cart model supporting Discount and Loyalty extensions."""
 
   pass
 
@@ -87,6 +92,8 @@ class UnifiedCheckout(
   FulfillmentCheckout,
   DiscountCheckoutResp,
   Ap2Checkout,
+  LoyaltyCheckout,
+  SplitPaymentsCheckout,
 ):
   """Checkout model supporting various extensions."""
 

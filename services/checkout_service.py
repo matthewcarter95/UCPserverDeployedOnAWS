@@ -40,12 +40,15 @@ import uuid
 
 import config
 import db
+import loyalty
+import ucp_auth
 from enums import CheckoutStatus
 from exceptions import CheckoutNotModifiableError
 from exceptions import IdempotencyConflictError
 from exceptions import InvalidRequestError
 from exceptions import OutOfStockError
 from exceptions import PaymentFailedError
+from exceptions import UcpError
 from exceptions import ResourceNotFoundError
 import httpx
 from models import UnifiedCheckout as Checkout
@@ -738,6 +741,7 @@ class CheckoutService:
     risk_signals: dict[str, Any],
     idempotency_key: str,
     checkout_complete: CheckoutCompleteRequest | None = None,
+    identity: ucp_auth.Identity | None = None,
   ) -> Checkout:
     """Complete a checkout session."""
     logger.info("Completing checkout session %s", checkout_id)
@@ -750,6 +754,9 @@ class CheckoutService:
       "checkout_complete": checkout_complete.model_dump(mode="json")
       if checkout_complete
       else None,
+      # Bind the replay record to the buyer: the same key from a different
+      # buyer is a different request, not a cached success.
+      "buyer": identity.sub if identity else None,
     }
     request_hash = self._compute_hash(
       "complete_checkout", combined_data, resource_id=checkout_id
@@ -777,8 +784,10 @@ class CheckoutService:
     checkout = await self._get_and_validate_checkout(checkout_id)
     self._ensure_modifiable(checkout, "complete")
 
-    # Process Payment
-    await self._process_payment(payment)
+    # Process Payment (one or more instruments; points are reserved first)
+    reserved, charged_other = await self._process_split_payment(
+      payment, checkout, idempotency_key, identity
+    )
 
     # Validate Fulfillment (Required for completion in this implementation)
     fulfillment_valid = False
@@ -795,6 +804,7 @@ class CheckoutService:
           break
 
     if not fulfillment_valid:
+      await self._release_points(reserved)
       raise InvalidRequestError(
         "Fulfillment address and option must be selected before completion."
       )
@@ -816,6 +826,7 @@ class CheckoutService:
             )
 
       checkout.status = CheckoutStatus.COMPLETED
+      self._echo_payment(checkout, reserved, charged_other)
       order_id = f"{uuid.uuid4()}"
       order_permalink_url = AnyUrl(f"{self.base_url}/orders/{order_id}")
 
@@ -948,12 +959,16 @@ class CheckoutService:
       # Commit both inventory updates and checkout status update atomically
       await self.transactions_session.commit()
 
-      # Notify webhook of order placement
-      await self._notify_webhook(checkout, "order_placed")
-
     except Exception as e:
       await self.transactions_session.rollback()
+      await self._release_points(reserved)
       raise e
+
+    # The order is persisted: now spend the points and credit the earn.
+    await self._finalize_points(checkout, reserved, identity)
+
+    # Notify webhook of order placement
+    await self._notify_webhook(checkout, "order_placed")
 
     return checkout
 
@@ -1427,6 +1442,269 @@ class CheckoutService:
             )
 
     checkout.totals.append(TotalResponse(type="total", amount=grand_total))
+
+  def _order_total(self, checkout: Checkout) -> int:
+    """Return the checkout's grand total in minor units."""
+    for total in checkout.totals or []:
+      if total.type == "total":
+        return int(total.amount)
+    return 0
+
+  async def _release_points(self, reserved: list[dict[str, Any]]) -> None:
+    """Give back every points reservation made for this attempt."""
+    for entry in reserved:
+      try:
+        await db.release_loyalty_points(
+          self.transactions_session, entry["loyalty_id"], entry["entry_id"]
+        )
+        await self.transactions_session.commit()
+      except Exception:  # pylint: disable=broad-exception-caught
+        # Never mask the original failure; the ledger keeps the entry as
+        # 'reserved' so it can be reconciled.
+        logger.exception("Failed to release points %s", entry["entry_id"])
+        await self.transactions_session.rollback()
+
+  def _echo_payment(
+    self,
+    checkout: Checkout,
+    reserved: list[dict[str, Any]],
+    charged_other: list[dict[str, Any]],
+  ) -> None:
+    """Report the actual amount charged to each instrument (split payments)."""
+    if not reserved:
+      return
+    checkout.payment = PaymentResponse(
+      instruments=[
+        {
+          "id": e["instrument_id"],
+          "handler_id": loyalty.HANDLER_ID,
+          "type": loyalty.INSTRUMENT_TYPE,
+          "amount": e["cents"],
+        }
+        for e in reserved
+      ]
+      + charged_other
+    )
+
+  async def _finalize_points(
+    self,
+    checkout: Checkout,
+    reserved: list[dict[str, Any]],
+    identity: ucp_auth.Identity | None,
+  ) -> None:
+    """Spend the reserved points and credit earned points.
+
+    Runs after the order is persisted. Failures here are logged, not raised:
+    the buyer has been charged and the order exists, and both ledger writes are
+    idempotent so they can be reconciled.
+    """
+    try:
+      for entry in reserved:
+        await db.commit_loyalty_reservation(
+          self.transactions_session, entry["entry_id"]
+        )
+      paid_by_points = sum(e["cents"] for e in reserved)
+      # Points are earned on the portion paid by other means.
+      earned = loyalty.earn_for_total(
+        max(self._order_total(checkout) - paid_by_points, 0)
+      )
+      if identity and identity.loyalty_id and earned > 0:
+        await db.credit_loyalty_points(
+          self.transactions_session,
+          identity.loyalty_id,
+          earned,
+          loyalty.earn_id(checkout.id),
+        )
+      await self.transactions_session.commit()
+    except Exception:  # pylint: disable=broad-exception-caught
+      logger.exception("Loyalty finalize failed for checkout %s", checkout.id)
+
+  async def _process_split_payment(
+    self,
+    payment: PaymentCreateRequest,
+    checkout: Checkout,
+    idempotency_key: str,
+    identity: ucp_auth.Identity | None,
+  ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Process one or more payment instruments for a completion.
+
+    Handles the mock loyalty-points instrument (split payments) plus the
+    existing single-instrument handlers. Points are reserved first so a failed
+    card never leaves points spent; any failure releases them.
+
+    Returns:
+      (points reservations, other instruments charged). The reservations are
+      empty when no points were used. The caller releases them on later failure
+      and commits them once the order is persisted.
+    """
+    instruments = list(payment.instruments or [])
+    if not instruments:
+      raise InvalidRequestError("Missing payment instruments")
+
+    points = [
+      (i, ins)
+      for i, ins in enumerate(instruments)
+      if getattr(ins, "handler_id", None) == loyalty.HANDLER_ID
+    ]
+    others = [
+      (i, ins)
+      for i, ins in enumerate(instruments)
+      if getattr(ins, "handler_id", None) != loyalty.HANDLER_ID
+    ]
+
+    if not points:
+      # Existing behaviour: a single card/wallet/mock instrument.
+      if len(others) > 1:
+        raise InvalidRequestError(
+          "Multiple payment instruments require the loyalty points handler"
+        )
+      await self._process_payment(payment)
+      return [], []
+
+    if len(points) > 1:
+      raise PaymentFailedError(
+        "Only one loyalty instrument is allowed",
+        code="payment_failed",
+        status_code=400,
+        path=f"$.payment.instruments[{points[1][0]}]",
+      )
+    if len(others) > 1:
+      raise InvalidRequestError(
+        "At most one non-loyalty instrument may accompany loyalty points"
+      )
+
+    index, instrument = points[0]
+    path = f"$.payment.instruments[{index}]"
+
+    # Spending points needs a verified buyer holding the 'complete' scope,
+    # whatever AUTH_MODE is. The account always comes from the token.
+    if identity is None:
+      raise ucp_auth.unauthorized(
+        self.base_url, "User identity is required to spend loyalty points"
+      )
+    if not identity.has_scope(ucp_auth.SCOPE_CHECKOUT_COMPLETE):
+      raise ucp_auth.forbidden(
+        self.base_url, (ucp_auth.SCOPE_CHECKOUT_COMPLETE,)
+      )
+    if not identity.loyalty_id:
+      raise PaymentFailedError(
+        "No loyalty account is linked to this buyer",
+        code="payment_failed",
+        status_code=402,
+        path=path,
+      )
+
+    total = self._order_total(checkout)
+    rules = loyalty.rules()
+    cap_cents = loyalty.max_redeemable_cents(total)
+
+    requested = getattr(instrument, "amount", None)
+    if requested is None:
+      # Open-amount: use as much as the balance and the cap allow.
+      balance = await db.get_loyalty_balance(
+        self.transactions_session, identity.loyalty_id
+      )
+      if not balance:
+        raise PaymentFailedError(
+          "No loyalty points available",
+          code="payment_failed",
+          status_code=402,
+          path=path,
+        )
+      cents = min(loyalty.points_to_cents(balance), cap_cents)
+    else:
+      cents = int(requested)
+    if cents <= 0:
+      raise PaymentFailedError(
+        "Loyalty amount must be positive",
+        code="payment_failed",
+        status_code=400,
+        path=path,
+      )
+    if cents % rules.cents_per_point:
+      raise PaymentFailedError(
+        f"Loyalty amount must be a multiple of {rules.cents_per_point} cents",
+        code="payment_failed",
+        status_code=400,
+        path=path,
+      )
+    if cents > total:
+      raise PaymentFailedError(
+        "Loyalty amount exceeds the order total",
+        code="payment_failed",
+        status_code=400,
+        path=path,
+      )
+    if cents > cap_cents:
+      raise PaymentFailedError(
+        f"Points may cover at most {rules.max_redeem_percent}% of an order",
+        code="payment_failed",
+        status_code=400,
+        path=path,
+      )
+    remainder = total - cents
+    if remainder > 0 and not others:
+      raise PaymentFailedError(
+        "A card or other instrument must cover the rest of the order",
+        code="payment_failed",
+        status_code=400,
+        path="$.payment.instruments",
+      )
+
+    entry_id = loyalty.reservation_id(idempotency_key, instrument.id)
+    pts = loyalty.cents_to_points(cents)
+    outcome = await db.reserve_loyalty_points(
+      self.transactions_session, identity.loyalty_id, pts, entry_id
+    )
+    if outcome == "insufficient":
+      raise PaymentFailedError(
+        "Insufficient loyalty points",
+        code="payment_failed",
+        status_code=402,
+        path=path,
+      )
+    if outcome == "exists":
+      # A concurrent request with the same idempotency key already holds
+      # these points; do not take them (or charge the card) twice.
+      raise IdempotencyConflictError(
+        "A completion with this idempotency key is already in progress"
+      )
+    # Make the reservation durable now, as it already is on DynamoDB, so a
+    # failure later is undone by an explicit release rather than a rollback.
+    await self.transactions_session.commit()
+    reserved = [
+      {
+        "entry_id": entry_id,
+        "loyalty_id": str(identity.loyalty_id),
+        "instrument_id": instrument.id,
+        "cents": cents,
+      }
+    ]
+
+    # Charge the remainder with the other instrument (existing mock handlers).
+    charged_other: list[dict[str, Any]] = []
+    if remainder > 0:
+      other_index, other = others[0]
+      try:
+        await self._process_payment(
+          PaymentCreateRequest(instruments=[other])
+        )
+      except UcpError as exc:
+        await self._release_points(reserved)
+        exc.path = f"$.payment.instruments[{other_index}]"
+        raise
+      except Exception:
+        await self._release_points(reserved)
+        raise
+      charged_other = [
+        {
+          "id": other.id,
+          "handler_id": getattr(other, "handler_id", ""),
+          "type": getattr(other, "type", ""),
+          "amount": remainder,
+        }
+      ]
+    return reserved, charged_other
 
   async def _process_payment(self, payment: PaymentCreateRequest) -> None:
     """Validate and process payment instruments."""

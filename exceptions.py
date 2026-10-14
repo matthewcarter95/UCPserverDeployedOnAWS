@@ -26,6 +26,7 @@ class UcpMessageError(BaseModel):
   code: str
   content: str
   severity: ErrorSeverity
+  path: str | None = None
 
 
 class UcpErrorResponse(BaseModel):
@@ -44,8 +45,12 @@ class UcpError(Exception):
     code: str = "INTERNAL_ERROR",
     status_code: int = 500,
     severity: ErrorSeverity = ErrorSeverity.UNRECOVERABLE,
+    headers: dict[str, str] | None = None,
+    path: str | None = None,
   ):
     """Initialize UcpError."""
+    self.headers = headers
+    self.path = path
     self.message = message
     self.code = code
     self.status_code = status_code
@@ -113,12 +118,14 @@ class PaymentFailedError(UcpError):
     message: str,
     code: str = "PAYMENT_FAILED",
     status_code: int = 402,
+    path: str | None = None,
   ):
     """Initialize PaymentFailedError."""
     super().__init__(
       message,
       code=code,
       status_code=status_code,
+      path=path,
       severity=ErrorSeverity.REQUIRES_BUYER_INPUT,
     )
 

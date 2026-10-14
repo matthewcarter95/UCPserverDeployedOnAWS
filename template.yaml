@@ -2,6 +2,24 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: UCP Merchant Server - Serverless FastAPI Application
 
+Parameters:
+  Auth0Domain:
+    Type: String
+    Default: universal-commerce-merchant.cic-demo-platform.auth0app.com
+    Description: Auth0 tenant that issues access tokens
+  AuthAudience:
+    Type: String
+    Default: api://ucp.session.service
+    Description: Resource server identifier expected in the token aud claim
+  AuthMode:
+    Type: String
+    Default: optional
+    AllowedValues: [off, optional, enforce]
+  LoyaltyClaim:
+    Type: String
+    Default: https://demo.okta.com/loyaltyId
+    Description: Access-token claim that carries the buyer's loyaltyId
+
 Globals:
   Function:
     Timeout: 30
@@ -25,9 +43,27 @@ Globals:
         REQUEST_LOGS_TABLE: !Ref RequestLogsTable
         PAYMENT_INSTRUMENTS_TABLE: !Ref PaymentInstrumentsTable
         CARTS_TABLE: !Ref CartsTable
+        LOYALTY_LEDGER_TABLE: !Ref LoyaltyLedgerTable
+        LOYALTY_POINTS_TABLE: RetailLoyaltyPointsTracker
+        AUTH0_DOMAIN: !Ref Auth0Domain
+        AUTH_AUDIENCE: !Ref AuthAudience
+        AUTH_MODE: !Ref AuthMode
+        LOYALTY_CLAIM: !Ref LoyaltyClaim
 
 Resources:
   # DynamoDB Tables
+  LoyaltyLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-loyalty-ledger'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entry_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entry_id
+          KeyType: HASH
+
   CartsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -272,6 +308,16 @@ Resources:
             TableName: !Ref TransactionsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref CartsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LoyaltyLedgerTable
+        # Existing balance table owned outside this stack. Our writes are
+        # conditional (see db_dynamodb.reserve_loyalty_points).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/RetailLoyaltyPointsTracker'
       FunctionUrlConfig:
         AuthType: NONE
         Cors:

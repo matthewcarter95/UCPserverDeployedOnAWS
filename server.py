@@ -113,12 +113,14 @@ async def ucp_exception_handler(request: Request, exc: UcpError):
         code=exc.code,
         content=exc.message,
         severity=exc.severity,
+        path=exc.path,
       )
     ],
   )
   return JSONResponse(
     status_code=exc.status_code,
-    content=error_response.model_dump(mode="json"),
+    content=error_response.model_dump(mode="json", exclude_none=True),
+    headers=exc.headers,
   )
 
 

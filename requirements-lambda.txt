@@ -13,3 +13,4 @@ cryptography>=42
 sqlalchemy>=2.0.0
 uvicorn>=0.38.0
 greenlet==3.2.5
+pyjwt[crypto]>=2.8

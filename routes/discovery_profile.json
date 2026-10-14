@@ -74,6 +74,87 @@
           "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/lookup",
           "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
         }
+      ],
+      "dev.ucp.common.loyalty": [
+        {
+          "version": "2026-08-25",
+          "extends": [
+            "dev.ucp.shopping.catalog.search",
+            "dev.ucp.shopping.catalog.lookup",
+            "dev.ucp.shopping.cart",
+            "dev.ucp.shopping.checkout"
+          ],
+          "spec": "https://ucp.dev/2026-08-25/specification/common/extensions/loyalty",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/loyalty.json"
+        }
+      ],
+      "dev.ucp.common.payment.split_payments": [
+        {
+          "version": "2026-08-25",
+          "extends": "dev.ucp.shopping.checkout",
+          "spec": "https://ucp.dev/2026-08-25/specification/payment/extensions/split-payments",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/payment_split_payments.json",
+          "config": {
+            "allowed_combinations": [
+              [
+                {
+                  "types": [
+                    "card",
+                    "tokenized_card"
+                  ],
+                  "min": 1,
+                  "max": 1
+                },
+                {
+                  "types": [
+                    "loyalty"
+                  ],
+                  "max": 1
+                }
+              ],
+              [
+                {
+                  "types": [
+                    "loyalty"
+                  ],
+                  "min": 1,
+                  "max": 1
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "dev.ucp.common.identity_linking": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/common/identity-linking/",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/identity_linking.json",
+          "config": {
+            "scopes": {
+              "mock.ucp.shopping.checkout:manage": {
+                "description": {
+                  "plain": "Create, update and cancel checkouts and carts on your behalf."
+                }
+              },
+              "mock.ucp.shopping.checkout:complete": {
+                "description": {
+                  "plain": "Complete a purchase and spend loyalty points on your behalf."
+                }
+              },
+              "mock.ucp.shopping.order:read": {
+                "description": {
+                  "plain": "View your orders."
+                }
+              },
+              "mock.ucp.shopping.order:manage": {
+                "description": {
+                  "plain": "Cancel, return or modify your orders."
+                }
+              }
+            }
+          }
+        }
       ]
     },
     "payment_handlers": {
@@ -146,6 +227,22 @@
           "version": "2026-08-25",
           "spec": "https://ucp.dev/2026-08-25/schemas/mock_payment_handler/spec",
           "config": {}
+        }
+      ],
+      "mock.loyalty_points": [
+        {
+          "id": "mock_loyalty_points",
+          "name": "mock.loyalty_points",
+          "version": "2026-08-25",
+          "spec": "https://example.com/mock/loyalty-points-handler",
+          "config": {
+            "currency": {
+              "name": "Petals",
+              "code": "PTL"
+            },
+            "cents_per_point": 1,
+            "max_redeem_percent": 50
+          }
         }
       ]
     }

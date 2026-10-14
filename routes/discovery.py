@@ -20,6 +20,7 @@ from fastapi import APIRouter
 from fastapi import Request
 from fastapi import Response
 import config
+import ucp_auth
 import webhook_signer
 
 router = APIRouter()
@@ -70,3 +71,22 @@ async def get_merchant_profile(request: Request, response: Response):
   profile_data.setdefault("keys", []).append(jwk)
 
   return profile_data
+
+
+@router.get(
+  "/.well-known/oauth-protected-resource",
+  response_model=dict,
+  summary="OAuth protected resource metadata (RFC 9728)",
+)
+async def get_protected_resource_metadata(request: Request, response: Response):
+  """Tell platforms which authorization server protects this business."""
+  response.headers["Cache-Control"] = PROFILE_CACHE_CONTROL
+  base = str(request.base_url).rstrip("/")
+  doc = {
+    "resource": ucp_auth.audience() or base,
+    "scopes_supported": list(ucp_auth.ALL_SCOPES),
+    "bearer_methods_supported": ["header"],
+  }
+  if ucp_auth.issuer() != "https:///":
+    doc["authorization_servers"] = [ucp_auth.issuer().rstrip("/")]
+  return doc

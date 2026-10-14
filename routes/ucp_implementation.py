@@ -22,10 +22,13 @@ import re
 from typing import Annotated, Any
 
 import dependencies
+import loyalty
+import ucp_auth
 from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
 from fastapi import Path
+from fastapi import Request
 from fastapi.routing import APIRoute
 import httpx
 import models
@@ -36,6 +39,8 @@ from models import (
 )
 from pydantic import BaseModel
 from pydantic import HttpUrl
+from pydantic import TypeAdapter
+from ucp_sdk.models.schemas.common.loyalty import Loyalty as LoyaltyMap
 from services.cart_service import CartService
 from services.checkout_service import CheckoutService
 from ucp_sdk.models.schemas.shopping.checkout_complete_request import (
@@ -139,7 +144,26 @@ async def extract_webhook_url(ucp_agent: str) -> str | None:
   return None
 
 
+_LOYALTY_ADAPTER = TypeAdapter(LoyaltyMap)
+
+
+def _decorate_loyalty(resource: Any, identity: ucp_auth.Identity | None) -> Any:
+  """Attach the buyer's loyalty membership to a response (not persisted)."""
+  if identity is None or not identity.loyalty_id:
+    return resource
+  total = next(
+    (t.amount for t in (resource.totals or []) if t.type == "total"), None
+  )
+  membership = loyalty.membership(identity.loyalty_id, total)
+  if membership:
+    resource.loyalty = _LOYALTY_ADAPTER.validate_python(membership)
+  return resource
+
+
 async def create_checkout(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("create_checkout"))
+  ],
   checkout_req: Annotated[UnifiedCheckoutCreateRequest, Body(...)],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
@@ -161,12 +185,16 @@ async def create_checkout(
   if webhook_url:
     platform_config = PlatformSchema(webhook_url=webhook_url)
 
-  return await checkout_service.create_checkout(
+  result = await checkout_service.create_checkout(
     unified_req, idempotency_key, platform_config
   )
+  return _decorate_loyalty(result, identity)
 
 
 async def get_checkout(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("get_checkout"))
+  ],
   checkout_id: Annotated[str, Path(..., alias="id")],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
@@ -177,10 +205,14 @@ async def get_checkout(
 ) -> models.UnifiedCheckout:
   """Get Checkout Implementation."""
   del common_headers  # Unused
-  return await checkout_service.get_checkout(checkout_id)
+  result = await checkout_service.get_checkout(checkout_id)
+  return _decorate_loyalty(result, identity)
 
 
 async def update_checkout(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("update_checkout"))
+  ],
   checkout_id: Annotated[str, Path(..., alias="id")],
   checkout_req: Annotated[models.UnifiedCheckoutUpdateRequest, Body(...)],
   common_headers: Annotated[
@@ -200,12 +232,16 @@ async def update_checkout(
   if webhook_url:
     platform_config = PlatformSchema(webhook_url=webhook_url)
 
-  return await checkout_service.update_checkout(
+  result = await checkout_service.update_checkout(
     checkout_id, unified_req, idempotency_key, platform_config
   )
+  return _decorate_loyalty(result, identity)
 
 
 async def complete_checkout(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("complete_checkout"))
+  ],
   checkout_id: Annotated[str, Path(..., alias="id")],
   payment: Annotated[dict[str, Any], Body(...)],
   risk_signals: Annotated[dict[str, Any], Body(...)],
@@ -230,10 +266,14 @@ async def complete_checkout(
     risk_signals,
     idempotency_key,
     checkout_complete=checkout_complete,
+    identity=identity,
   )
 
 
 async def cancel_checkout(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("cancel_checkout"))
+  ],
   checkout_id: Annotated[str, Path(..., alias="id")],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
@@ -248,6 +288,9 @@ async def cancel_checkout(
 
 
 async def create_cart(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("create_cart"))
+  ],
   cart_req: Annotated[
     UnifiedCartCreateRequest,
     Body(...),
@@ -260,10 +303,14 @@ async def create_cart(
 ) -> models.UnifiedCart:
   """Create Cart Implementation."""
   del common_headers  # Unused
-  return await cart_service.create_cart(cart_req, idempotency_key)
+  result = await cart_service.create_cart(cart_req, idempotency_key)
+  return _decorate_loyalty(result, identity)
 
 
 async def get_cart(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("get_cart"))
+  ],
   cart_id: Annotated[str, Path(..., alias="id")],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
@@ -272,10 +319,13 @@ async def get_cart(
 ) -> models.UnifiedCart:
   """Get Cart Implementation."""
   del common_headers  # Unused
-  return await cart_service.get_cart(cart_id)
+  return _decorate_loyalty(await cart_service.get_cart(cart_id), identity)
 
 
 async def update_cart(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("update_cart"))
+  ],
   cart_id: Annotated[str, Path(..., alias="id")],
   cart_req: Annotated[
     UnifiedCartUpdateRequest,
@@ -289,10 +339,15 @@ async def update_cart(
 ) -> models.UnifiedCart:
   """Update Cart Implementation."""
   del common_headers  # Unused
-  return await cart_service.update_cart(cart_id, cart_req, idempotency_key)
+  return _decorate_loyalty(
+    await cart_service.update_cart(cart_id, cart_req, idempotency_key), identity
+  )
 
 
 async def cancel_cart(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("cancel_cart"))
+  ],
   cart_id: Annotated[str, Path(..., alias="id")],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
