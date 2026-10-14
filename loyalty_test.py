@@ -284,6 +284,51 @@ class LoyaltyTest(it.IntegrationTest):
     self.assertEqual(response.status_code, 403)
     self.assertIn(f'scope="{COMPLETE}"', response.headers["www-authenticate"])
 
+  def test_orders_are_scope_gated_in_enforce_mode(self) -> None:
+    token = self._token()
+    with self.client:
+      checkout_id, _ = self._new_checkout("g1", token)
+      done = self._complete(checkout_id, "g2", token, [self._card()])
+      order_id = done.json()["order"]["id"]
+      os.environ["AUTH_MODE"] = "enforce"
+      anonymous = self.client.get(
+        f"/orders/{order_id}", headers=self._headers("g3")
+      )
+      no_scope = self.client.get(
+        f"/orders/{order_id}", headers=self._headers("g4", self._token())
+      )
+      read = self.client.get(
+        f"/orders/{order_id}",
+        headers=self._headers(
+          "g5", self._token(scopes=(ucp_auth.SCOPE_ORDER_READ,))
+        ),
+      )
+    self.assertEqual(anonymous.status_code, 401)
+    self.assertEqual(no_scope.status_code, 403)
+    self.assertIn(
+      f'scope="{ucp_auth.SCOPE_ORDER_READ}"',
+      no_scope.headers["www-authenticate"],
+    )
+    self.assertEqual(read.status_code, 200, read.text)
+
+  def test_client_allowlist(self) -> None:
+    os.environ["AUTH_MODE"] = "enforce"
+    os.environ["AUTH_ALLOWED_CLIENT_IDS"] = "agent-client"
+    payload = self._create_checkout_payload(
+      "x", [("rose", "Red Rose", 1000, 1)]
+    ).model_dump(mode="json", exclude_none=True)
+    with self.client:
+      allowed = self.client.post(
+        "/checkout-sessions", headers=self._headers("al1", self._token()), json=payload
+      )
+      blocked = self.client.post(
+        "/checkout-sessions",
+        headers=self._headers("al2", self._token(azp="other-client")),
+        json=payload,
+      )
+    self.assertEqual(allowed.status_code, 201, allowed.text)
+    self.assertEqual(blocked.status_code, 401)
+
   # ----- loyalty redemption ----------------------------------------------
 
   def test_split_payment_points_plus_card(self) -> None:

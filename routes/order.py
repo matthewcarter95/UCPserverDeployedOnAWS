@@ -17,6 +17,7 @@
 from typing import Annotated, Any
 
 import dependencies
+import ucp_auth
 from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
@@ -31,6 +32,7 @@ router = APIRouter()
   "/orders/{id}",
   response_model=dict[str, Any],
   operation_id="get_order",
+  dependencies=[Depends(ucp_auth.require("get_order"))],
 )
 async def get_order(
   order_id: Annotated[str, Path(..., alias="id")],
@@ -71,6 +73,7 @@ async def ship_order(
   "/orders/{id}",
   response_model=dict[str, Any],
   operation_id="update_order",
+  dependencies=[Depends(ucp_auth.require("update_order"))],
 )
 async def update_order(
   order_id: Annotated[str, Path(..., alias="id")],

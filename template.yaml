@@ -13,8 +13,12 @@ Parameters:
     Description: Resource server identifier expected in the token aud claim
   AuthMode:
     Type: String
-    Default: optional
+    Default: enforce
     AllowedValues: [off, optional, enforce]
+  AllowedClientIds:
+    Type: CommaDelimitedList
+    Default: "C70smEFi7G1XQBO9KVeBN5adJWpfQeDo,JadSTY7yOSsK8DsjaMCqDPyRA63G3xxN"
+    Description: Auth0 client ids (azp) permitted to call this merchant
   LoyaltyClaim:
     Type: String
     Default: https://demo.okta.com/loyaltyId
@@ -48,6 +52,7 @@ Globals:
         AUTH0_DOMAIN: !Ref Auth0Domain
         AUTH_AUDIENCE: !Ref AuthAudience
         AUTH_MODE: !Ref AuthMode
+        AUTH_ALLOWED_CLIENT_IDS: !Join [',', !Ref AllowedClientIds]
         LOYALTY_CLAIM: !Ref LoyaltyClaim
 
 Resources:

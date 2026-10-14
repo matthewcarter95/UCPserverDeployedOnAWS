@@ -80,6 +80,8 @@ OPERATION_SCOPES: dict[str, tuple[str, ...]] = {
   "get_cart": (SCOPE_CHECKOUT_MANAGE,),
   "update_cart": (SCOPE_CHECKOUT_MANAGE,),
   "cancel_cart": (SCOPE_CHECKOUT_MANAGE,),
+  "get_order": (SCOPE_ORDER_READ,),
+  "update_order": (SCOPE_ORDER_MANAGE,),
 }
 
 
