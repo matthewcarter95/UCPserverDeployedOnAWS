@@ -186,14 +186,82 @@ async def delete_cart_session(session: Any, cart_id: str) -> None:
 
 
 # Order operations
-async def save_order(session: Any, order_id: str, order_obj: dict[str, Any]) -> None:
-  """Save or update an order."""
-  _save_blob(config.ORDERS_TABLE, order_id, {}, order_obj)
+async def save_order(
+  session: Any,
+  order_id: str,
+  order_obj: dict[str, Any],
+  buyer_sub: str | None = None,
+  buyer_email: str | None = None,
+) -> None:
+  """Save or update an order.
+
+  buyer_sub / buyer_email are stored beside `data` (the UCP Order schema has no
+  buyer field) and only on creation: a later save passes no buyer and must not
+  strip it, so those attributes are written only when given.
+  """
+  table = _get_table(config.ORDERS_TABLE)
+  data = json.loads(json.dumps(order_obj, cls=DecimalEncoder))
+  if buyer_sub is None:
+    # An update keeps whatever buyer attributes the row already has.
+    table.update_item(
+      Key={'id': order_id},
+      UpdateExpression='SET #d = :d',
+      ExpressionAttributeNames={'#d': 'data'},
+      ExpressionAttributeValues={':d': data},
+    )
+    return
+  now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+  names = {'#d': 'data'}
+  values = {':d': data, ':s': str(buyer_sub), ':c': now}
+  expr = 'SET #d = :d, buyer_sub = :s, created_at = if_not_exists(created_at, :c)'
+  if buyer_email:
+    expr += ', buyer_email = :e'
+    values[':e'] = buyer_email
+  table.update_item(
+    Key={'id': order_id},
+    UpdateExpression=expr,
+    ExpressionAttributeNames=names,
+    ExpressionAttributeValues=values,
+  )
 
 
 async def get_order(session: Any, order_id: str):
   """Retrieve an order by ID."""
   return _get_blob(config.ORDERS_TABLE, order_id)
+
+
+async def get_order_owner(session: Any, order_id: str) -> str | None:
+  """Return the order's buyer_sub (None when unowned or missing)."""
+  item = _get_table(config.ORDERS_TABLE).get_item(
+    Key={'id': order_id}, ProjectionExpression='buyer_sub'
+  ).get('Item')
+  return item.get('buyer_sub') if item else None
+
+
+async def list_orders_for_buyer(
+  session: Any, buyer_sub: str, limit: int, offset: int
+) -> tuple[list[dict[str, Any]], int]:
+  """Return (a page of this buyer's orders newest first, total count).
+
+  Reads the buyer-sub-index GSI; sorting and paging happen in memory because a
+  buyer has few orders and the index sorts by created_at only within the buyer.
+  """
+  table = _get_table(config.ORDERS_TABLE)
+  items, kwargs = [], {}
+  while True:
+    resp = table.query(
+      IndexName='buyer-sub-index',
+      KeyConditionExpression=Key('buyer_sub').eq(str(buyer_sub)),
+      ScanIndexForward=False,
+      **kwargs,
+    )
+    items.extend(resp.get('Items', []))
+    if 'LastEvaluatedKey' not in resp:
+      break
+    kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
+  items.sort(key=lambda i: (i.get('created_at') or '', i['id']), reverse=True)
+  page = items[offset : offset + limit]
+  return [_convert_decimals(i['data']) for i in page], len(items)
 
 
 # Customer operations

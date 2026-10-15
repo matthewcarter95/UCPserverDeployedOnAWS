@@ -973,6 +973,9 @@ class CheckoutService:
         self.transactions_session,
         order.id,
         order.model_dump(mode="json", by_alias=True, exclude_none=True),
+        buyer_sub=identity.sub if identity else None,
+        buyer_email=(identity.email if identity else None)
+        or (checkout.buyer.email if checkout.buyer else None),
       )
 
       await self._save_checkout(
@@ -1243,12 +1246,46 @@ class CheckoutService:
   async def get_order(
     self,
     order_id: str,
+    identity: Any = _INTERNAL,
   ) -> dict[str, Any]:
-    """Retrieve an order."""
+    """Retrieve an order, hiding it (404) from anyone but its owner.
+
+    Orders placed by an authenticated buyer belong to that buyer. Orders with
+    no recorded owner (placed anonymously, or before owners were recorded) stay
+    readable. Merchant-internal callers pass no identity.
+    """
     data = await db.get_order(self.transactions_session, order_id)
     if not data:
       raise ResourceNotFoundError("Order not found")
+    if identity is not _INTERNAL:
+      owner = await db.get_order_owner(self.transactions_session, order_id)
+      caller = identity.sub if identity is not None else None
+      if owner is not None and owner != caller:
+        logger.warning("Order %s requested by a non-owner", order_id)
+        raise ResourceNotFoundError("Order not found")
     return data
+
+  async def list_orders(
+    self,
+    identity: ucp_auth.Identity,
+    limit: int = 20,
+    offset: int = 0,
+  ) -> dict[str, Any]:
+    """List the caller's own orders, newest first."""
+    limit = max(1, min(int(limit), 100))
+    offset = max(0, int(offset))
+    orders, total = await db.list_orders_for_buyer(
+      self.transactions_session, identity.sub, limit, offset
+    )
+    return {
+      "orders": orders,
+      "pagination": {
+        "total_count": total,
+        "limit": limit,
+        "offset": offset,
+        "has_next_page": offset + len(orders) < total,
+      },
+    }
 
   async def update_order(
     self,

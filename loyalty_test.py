@@ -26,6 +26,7 @@ from unittest import mock
 from absl.testing import absltest
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
+import config
 import db
 import integration_test as it
 import loyalty
@@ -569,6 +570,110 @@ class LoyaltyTest(it.IntegrationTest):
       )
     self.assertEqual(mine.status_code, 201, mine.text)
     self.assertEqual(other.status_code, 409)
+
+  # ----- orders: owner recorded, owner-only reads, per-buyer list ---------
+
+  def _place_order(self, key, token, qty=1):
+    checkout_id, _ = self._new_checkout(key, token, qty=qty)
+    done = self._complete(checkout_id, f"{key}c", token, [self._card()])
+    self.assertEqual(done.status_code, 200, done.text)
+    return done.json()["order"]["id"]
+
+  def _order_row(self, order_id):
+    async def read():
+      async with self.transactions_session_factory() as session:
+        row = await session.get(db.Order, order_id)
+        return row.buyer_sub, row.buyer_email, row.created_at, row.data
+
+    return asyncio.run(read())
+
+  def test_order_records_the_verified_buyer(self) -> None:
+    token = self._token(profile=True, email="pat@example.com")
+    with self.client:
+      order_id = self._place_order("or1", token)
+    sub, email, created_at, data = self._order_row(order_id)
+    self.assertEqual(sub, "auth0|buyer1")
+    self.assertEqual(email, "pat@example.com")
+    self.assertTrue(created_at)
+    self.assertNotIn("buyer", data, "UCP order object stays schema-clean")
+
+  def test_anonymous_order_has_no_owner(self) -> None:
+    with self.client:
+      order_id = self._place_order("or2", None)
+    sub, email, _, _ = self._order_row(order_id)
+    self.assertIsNone(sub)
+    self.assertIsNone(email)
+
+  def test_order_read_is_owner_only(self) -> None:
+    os.environ["AUTH_MODE"] = "enforce"
+    mine = self._token(scopes=(MANAGE, COMPLETE, ucp_auth.SCOPE_ORDER_READ))
+    other = self._other(scopes=(ucp_auth.SCOPE_ORDER_READ,))
+    with self.client:
+      order_id = self._place_order("or3", mine)
+      owner = self.client.get(f"/orders/{order_id}", headers=self._headers("or3a", mine))
+      stranger = self.client.get(f"/orders/{order_id}", headers=self._headers("or3b", other))
+      anonymous = self.client.get(f"/orders/{order_id}", headers=self._headers("or3c"))
+    self.assertEqual(owner.status_code, 200, owner.text)
+    self.assertEqual(owner.json()["id"], order_id)
+    self.assertEqual(stranger.status_code, 404, stranger.text)
+    self.assertEqual(anonymous.status_code, 401)
+
+  def test_shipping_an_order_keeps_its_owner(self) -> None:
+    mine = self._token()
+    with self.client:
+      order_id = self._place_order("or4", mine)
+      secret = config.FLAGS.simulation_secret
+      shipped = self.client.post(
+        f"/testing/simulate-shipping/{order_id}",
+        headers={**self._headers("or4a"), "Simulation-Secret": secret},
+      )
+    self.assertEqual(shipped.status_code, 200, shipped.text)
+    sub, _, _, data = self._order_row(order_id)
+    events = data["fulfillment"]["events"]
+    self.assertEqual([e["type"] for e in events], ["shipped"], "update applied")
+    self.assertEqual(sub, "auth0|buyer1", "an update must not strip the owner")
+
+  def test_list_orders_returns_only_my_orders_newest_first(self) -> None:
+    os.environ["AUTH_MODE"] = "enforce"
+    scopes = (MANAGE, COMPLETE, ucp_auth.SCOPE_ORDER_READ)
+    mine = self._token(scopes=scopes)
+    other = self._other(scopes=scopes)
+    with self.client:
+      first = self._place_order("ls1", mine)
+      second = self._place_order("ls2", mine)
+      third = self._place_order("ls3", mine)
+      theirs = self._place_order("ls4", other)
+      listing = self.client.get("/orders", headers=self._headers("ls5", mine))
+      page = self.client.get("/orders?limit=2&offset=0", headers=self._headers("ls6", mine))
+      page2 = self.client.get("/orders?limit=2&offset=2", headers=self._headers("ls7", mine))
+      other_listing = self.client.get("/orders", headers=self._headers("ls8", other))
+    body = listing.json()
+    ids = [o["id"] for o in body["orders"]]
+    self.assertEqual(listing.status_code, 200, listing.text)
+    self.assertEqual(body["pagination"]["total_count"], 3)
+    self.assertEqual(set(ids), {first, second, third})
+    self.assertNotIn(theirs, ids)
+    self.assertEqual(ids, [third, second, first], "newest first")
+    self.assertEqual(len(page.json()["orders"]), 2)
+    self.assertTrue(page.json()["pagination"]["has_next_page"])
+    self.assertEqual(len(page2.json()["orders"]), 1)
+    self.assertFalse(page2.json()["pagination"]["has_next_page"])
+    self.assertEqual([o["id"] for o in other_listing.json()["orders"]], [theirs])
+
+  def test_list_orders_needs_identity_and_scope(self) -> None:
+    os.environ["AUTH_MODE"] = "enforce"
+    with self.client:
+      anonymous = self.client.get("/orders", headers=self._headers("lq1"))
+      no_scope = self.client.get("/orders", headers=self._headers("lq2", self._token()))
+    self.assertEqual(anonymous.status_code, 401)
+    self.assertIn("www-authenticate", anonymous.headers)
+    self.assertEqual(no_scope.status_code, 403)
+    self.assertIn(ucp_auth.SCOPE_ORDER_READ, no_scope.headers["www-authenticate"])
+
+  def test_list_orders_is_never_anonymous_even_in_optional_mode(self) -> None:
+    with self.client:
+      response = self.client.get("/orders", headers=self._headers("lo1"))
+    self.assertEqual(response.status_code, 401)
 
   # ----- ownership --------------------------------------------------------
 

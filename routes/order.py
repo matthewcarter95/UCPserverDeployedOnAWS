@@ -22,6 +22,8 @@ from fastapi import APIRouter
 from fastapi import Body
 from fastapi import Depends
 from fastapi import Path
+from fastapi import Query
+from fastapi import Request
 from models import UnifiedOrder
 from services.checkout_service import CheckoutService
 
@@ -29,12 +31,48 @@ router = APIRouter()
 
 
 @router.get(
+  "/orders",
+  response_model=dict[str, Any],
+  operation_id="list_orders",
+)
+async def list_orders(
+  request: Request,
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("list_orders"))
+  ],
+  common_headers: Annotated[
+    dependencies.CommonHeaders, Depends(dependencies.common_headers)
+  ],
+  checkout_service: Annotated[
+    CheckoutService, Depends(dependencies.get_checkout_service)
+  ],
+  limit: int = Query(20, ge=1, le=100),
+  offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+  """List the authenticated buyer's orders, newest first.
+
+  A merchant extension (UCP defines no order listing). It always requires an
+  identified buyer, whatever AUTH_MODE is: there is no meaningful anonymous
+  list.
+  """
+  del common_headers  # Unused
+  if identity is None:
+    raise ucp_auth.unauthorized(
+      str(request.base_url).rstrip("/"),
+      "User identity is required to list orders",
+    )
+  return await checkout_service.list_orders(identity, limit, offset)
+
+
+@router.get(
   "/orders/{id}",
   response_model=dict[str, Any],
   operation_id="get_order",
-  dependencies=[Depends(ucp_auth.require("get_order"))],
 )
 async def get_order(
+  identity: Annotated[
+    ucp_auth.Identity | None, Depends(ucp_auth.require("get_order"))
+  ],
   order_id: Annotated[str, Path(..., alias="id")],
   common_headers: Annotated[
     dependencies.CommonHeaders, Depends(dependencies.common_headers)
@@ -43,9 +81,9 @@ async def get_order(
     CheckoutService, Depends(dependencies.get_checkout_service)
   ],
 ) -> dict[str, Any]:
-  """Get an order by ID."""
+  """Get an order by ID (owner only)."""
   del common_headers  # Unused
-  return await checkout_service.get_order(order_id)
+  return await checkout_service.get_order(order_id, identity)
 
 
 @router.post(

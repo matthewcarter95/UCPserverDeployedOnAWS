@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 # The AddClaimsToTokens post-login Action in the myid-selfservice tenant adds
 # these namespaced claims to access tokens. loyaltyId is added for every
 # client; name, email and shippingAddress only for the shopping-agent SPA.
-DEFAULT_CLAIM_NAMESPACE = "https://demo.okta"
+DEFAULT_CLAIM_NAMESPACE = "https://demo.okta.com"
 DEFAULT_LOYALTY_CLAIM = f"{DEFAULT_CLAIM_NAMESPACE}/loyaltyId"
 
 # Scope names. The `mock.` prefix is used because Auth0 reserves `dev.ucp`.
@@ -86,6 +86,7 @@ OPERATION_SCOPES: dict[str, tuple[str, ...]] = {
   "update_cart": (SCOPE_CHECKOUT_MANAGE,),
   "cancel_cart": (SCOPE_CHECKOUT_MANAGE,),
   "get_order": (SCOPE_ORDER_READ,),
+  "list_orders": (SCOPE_ORDER_READ,),
   "update_order": (SCOPE_ORDER_MANAGE,),
 }
 

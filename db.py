@@ -200,6 +200,12 @@ class Order(TransactionBase):
 
   id = Column(String, primary_key=True)
   data = Column(JSON)
+  # Owner of the order, from the verified identity at creation. Kept outside
+  # `data` because the UCP Order schema has no buyer field. Null for orders
+  # placed without an authenticated buyer.
+  buyer_sub = Column(String, index=True, nullable=True)
+  buyer_email = Column(String, nullable=True)
+  created_at = Column(String, nullable=True)
 
 
 class RequestLog(TransactionBase):
@@ -535,15 +541,30 @@ async def get_checkouts_by_cart_id(
 
 
 async def save_order(
-  session: AsyncSession, order_id: str, order_obj: dict[str, Any]
+  session: AsyncSession,
+  order_id: str,
+  order_obj: dict[str, Any],
+  buyer_sub: str | None = None,
+  buyer_email: str | None = None,
 ) -> None:
-  """Save or update an order."""
+  """Save or update an order.
+
+  The buyer is recorded when the order is created and never changed by later
+  saves (shipping events, updates), which pass no buyer.
+  """
   existing = await session.get(Order, order_id)
   if existing:
     existing.data = order_obj
   else:
-    new_order = Order(id=order_id, data=order_obj)
-    session.add(new_order)
+    session.add(
+      Order(
+        id=order_id,
+        data=order_obj,
+        buyer_sub=buyer_sub,
+        buyer_email=buyer_email,
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+      )
+    )
 
 
 async def get_order(
@@ -554,6 +575,32 @@ async def get_order(
   if result:
     return result.data
   return None
+
+
+async def get_order_owner(
+  session: AsyncSession, order_id: str
+) -> str | None:
+  """Return the order's buyer_sub (None when unowned or missing)."""
+  result = await session.get(Order, order_id)
+  return result.buyer_sub if result else None
+
+
+async def list_orders_for_buyer(
+  session: AsyncSession, buyer_sub: str, limit: int, offset: int
+) -> tuple[list[dict[str, Any]], int]:
+  """Return (a page of this buyer's orders newest first, total count)."""
+  base = select(Order).where(Order.buyer_sub == buyer_sub)
+  total = (
+    await session.execute(
+      select(func.count()).select_from(base.subquery())
+    )
+  ).scalar_one()
+  rows = (
+    await session.execute(
+      base.order_by(Order.created_at.desc(), Order.id).limit(limit).offset(offset)
+    )
+  ).scalars().all()
+  return [r.data for r in rows], int(total)
 
 
 async def log_request(
