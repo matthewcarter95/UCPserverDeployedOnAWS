@@ -35,6 +35,7 @@ import datetime
 import hashlib
 import json
 import logging
+import os
 from typing import Any
 import uuid
 
@@ -872,7 +873,13 @@ class CheckoutService:
       checkout.status = CheckoutStatus.COMPLETED
       self._echo_payment(checkout, reserved, charged_other)
       order_id = f"{uuid.uuid4()}"
-      order_permalink_url = AnyUrl(f"{self.base_url}/orders/{order_id}")
+      # Point buyers at the merchant web app's order page when one is
+      # configured; otherwise at this API's own (JSON, authenticated) endpoint.
+      permalink_base = (
+        os.environ.get("ORDER_PAGE_BASE_URL", "").strip().rstrip("/")
+        or self.base_url
+      )
+      order_permalink_url = AnyUrl(f"{permalink_base}/orders/{order_id}")
 
       checkout.order = OrderConfirmation(
         id=order_id, permalink_url=order_permalink_url

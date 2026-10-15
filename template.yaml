@@ -19,6 +19,10 @@ Parameters:
     Type: CommaDelimitedList
     Default: "PX3u5zLgnC39WzYFnGU6Aval5V9xabGd"
     Description: Auth0 client ids (azp) permitted to call this merchant
+  OrderPageBaseUrl:
+    Type: String
+    Default: https://smitty.demo-connect.us
+    Description: Merchant web app origin. Order permalink_url becomes <this>/orders/<id>; blank uses this API's own /orders/<id>
   LoyaltyClaim:
     Type: String
     Default: https://demo.okta.com/loyaltyId
@@ -54,6 +58,7 @@ Globals:
         AUTH_MODE: !Ref AuthMode
         AUTH_ALLOWED_CLIENT_IDS: !Join [',', !Ref AllowedClientIds]
         LOYALTY_CLAIM: !Ref LoyaltyClaim
+        ORDER_PAGE_BASE_URL: !Ref OrderPageBaseUrl
 
 Resources:
   # DynamoDB Tables

@@ -732,6 +732,39 @@ class LoyaltyTest(it.IntegrationTest):
     self.assertEqual(done.status_code, 200)
     self.assertEqual(self._offered_cards(after), [])
 
+  # ----- order permalink -----------------------------------------------
+
+  def test_permalink_points_at_the_web_app_when_configured(self) -> None:
+    os.environ["ORDER_PAGE_BASE_URL"] = "https://smitty.demo-connect.us/"
+    token = self._token()
+    with self.client:
+      checkout_id, _ = self._new_checkout("pl1", token)
+      done = self._complete(checkout_id, "pl2", token, [self._card()])
+    order_id = done.json()["order"]["id"]
+    expected = f"https://smitty.demo-connect.us/orders/{order_id}"
+    self.assertEqual(done.json()["order"]["permalink_url"], expected)
+    _, _, _, data = self._order_row(order_id)
+    self.assertEqual(data["permalink_url"], expected, "stored order matches")
+
+  def test_permalink_falls_back_to_this_api(self) -> None:
+    os.environ["ORDER_PAGE_BASE_URL"] = ""
+    token = self._token()
+    with self.client:
+      checkout_id, _ = self._new_checkout("pl3", token)
+      done = self._complete(checkout_id, "pl4", token, [self._card()])
+    url = done.json()["order"]["permalink_url"]
+    self.assertTrue(url.startswith("http://testserver/orders/"), url)
+
+  def test_unset_permalink_base_uses_this_api(self) -> None:
+    os.environ.pop("ORDER_PAGE_BASE_URL", None)
+    token = self._token()
+    with self.client:
+      checkout_id, _ = self._new_checkout("pl5", token)
+      done = self._complete(checkout_id, "pl6", token, [self._card()])
+    self.assertTrue(
+      done.json()["order"]["permalink_url"].startswith("http://testserver/orders/")
+    )
+
   # ----- orders: owner recorded, owner-only reads, per-buyer list ---------
 
   def _place_order(self, key, token, qty=1):
