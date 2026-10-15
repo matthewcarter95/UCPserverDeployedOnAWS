@@ -54,7 +54,8 @@ logger = logging.getLogger(__name__)
 
 # The AddClaimsToTokens post-login Action in the myid-selfservice tenant adds
 # these namespaced claims to access tokens. loyaltyId is added for every
-# client; name, email and shippingAddress only for the shopping-agent SPA.
+# client; name, email, shippingAddress and paymentMethods only for the
+# shopping-agent SPA.
 DEFAULT_CLAIM_NAMESPACE = "https://demo.okta.com"
 DEFAULT_LOYALTY_CLAIM = f"{DEFAULT_CLAIM_NAMESPACE}/loyaltyId"
 
@@ -104,6 +105,10 @@ class Identity:
   # The buyer's saved shipping address as stored in Auth0 user_metadata, e.g.
   # {id, label, street, city, state, zip, country}. Shape is not validated here.
   shipping_address: dict[str, Any] | None = None
+  # The buyer's saved cards from Auth0 user_metadata.payment_methods, as sent
+  # in the `paymentMethods` claim (display-safe fields only; never a card
+  # number). Entries are validated in buyer_profile.
+  payment_methods: list[dict[str, Any]] | None = None
   claims: dict[str, Any] = field(default_factory=dict, repr=False)
 
   def has_scope(self, scope: str) -> bool:
@@ -226,6 +231,7 @@ def _identity_from_claims(claims: dict[str, Any]) -> Identity:
   raw_loyalty = claims.get(loyalty_claim())
   ns = claim_namespace()
   address = claims.get(f"{ns}/shippingAddress")
+  methods = claims.get(f"{ns}/paymentMethods")
   return Identity(
     sub=str(claims["sub"]),
     scopes=scopes,
@@ -234,6 +240,9 @@ def _identity_from_claims(claims: dict[str, Any]) -> Identity:
     name=_text(claims.get(f"{ns}/name")),
     email=_text(claims.get(f"{ns}/email")),
     shipping_address=address if isinstance(address, dict) and address else None,
+    payment_methods=[m for m in methods if isinstance(m, dict)]
+    if isinstance(methods, list)
+    else None,
     claims=claims,
   )
 

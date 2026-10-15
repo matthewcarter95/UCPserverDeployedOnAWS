@@ -21,6 +21,7 @@ import logging
 import re
 from typing import Annotated, Any
 
+import buyer_profile
 import dependencies
 import loyalty
 import ucp_auth
@@ -153,16 +154,25 @@ async def _decorate_checkout(
   identity: ucp_auth.Identity | None,
   checkout_service: CheckoutService,
 ) -> Any:
-  """Attach loyalty membership and the spendable points instrument."""
+  """Attach loyalty membership, spendable points and the buyer's saved cards."""
   checkout = _decorate_loyalty(checkout, identity)
+  offered: list[Any] = []
   instrument = await checkout_service.points_instrument(identity, checkout)
   if instrument:
-    existing = [
+    offered.append(instrument)
+  # Saved cards are offered while the buyer can still pay.
+  if checkout.status not in ("completed", "canceled"):
+    offered.extend(buyer_profile.saved_card_instruments(identity))
+  if offered:
+    offered_ids = {i["id"] for i in offered}
+    kept = [
       i
       for i in (checkout.payment.instruments if checkout.payment else None) or []
-      if getattr(i, "handler_id", None) != loyalty.HANDLER_ID
+      if getattr(i, "id", None) not in offered_ids
+      and getattr(i, "handler_id", None) != loyalty.HANDLER_ID
+      and not str(getattr(i, "id", "")).startswith(buyer_profile.SAVED_CARD_PREFIX)
     ]
-    checkout.payment = PaymentResponse(instruments=[*existing, instrument])
+    checkout.payment = PaymentResponse(instruments=[*kept, *offered])
   return checkout
 
 

@@ -828,6 +828,7 @@ class CheckoutService:
     self._ensure_modifiable(checkout, "complete")
 
     # Process Payment (one or more instruments; points are reserved first)
+    payment = self._resolve_saved_cards(payment, identity)
     reserved, charged_other = await self._process_split_payment(
       payment, checkout, idempotency_key, identity
     )
@@ -1870,6 +1871,62 @@ class CheckoutService:
         }
       ]
     return reserved, charged_other
+
+  def _resolve_saved_cards(
+    self,
+    payment: PaymentCreateRequest,
+    identity: ucp_auth.Identity | None,
+  ) -> PaymentCreateRequest:
+    """Swap a submitted saved-card id for the mock handler's success token.
+
+    A saved card is business-owned: the platform sends only its opaque id and
+    the merchant supplies the credential. Ids are derived from the buyer's own
+    `sub`, so an id from another buyer (or a made-up one) never resolves.
+    Anything not shaped like a saved-card id is left for the normal handlers.
+    """
+    instruments = list(payment.instruments or [])
+    if not any(
+      str(getattr(i, "id", "")).startswith(buyer_profile.SAVED_CARD_PREFIX)
+      for i in instruments
+    ):
+      return payment
+    cards = buyer_profile.saved_cards(identity)
+    resolved = []
+    for index, instrument in enumerate(instruments):
+      instrument_id = str(getattr(instrument, "id", ""))
+      if not instrument_id.startswith(buyer_profile.SAVED_CARD_PREFIX):
+        resolved.append(instrument)
+        continue
+      card = cards.get(instrument_id)
+      path = f"$.payment.instruments[{index}]"
+      if card is None:
+        raise PaymentFailedError(
+          "That saved card is not available",
+          code="payment_failed",
+          status_code=402,
+          path=path,
+        )
+      if card["expired"]:
+        raise PaymentFailedError(
+          "That saved card has expired",
+          code="payment_failed",
+          status_code=402,
+          path=path,
+        )
+      # Rebuild through the SDK model so the credential is validated and typed.
+      # Only the id (and any amount, for a split) is taken from the caller; the
+      # handler, type and credential are the merchant's.
+      data = {
+        "id": instrument_id,
+        "handler_id": buyer_profile.CARD_HANDLER_ID,
+        "type": "card",
+        "credential": {"type": "token", "token": "success_token"},
+      }
+      amount = getattr(instrument, "amount", None)
+      if amount is not None:
+        data["amount"] = amount
+      resolved.append(type(instrument).model_validate(data))
+    return payment.model_copy(update={"instruments": resolved})
 
   async def _process_payment(self, payment: PaymentCreateRequest) -> None:
     """Validate and process payment instruments."""

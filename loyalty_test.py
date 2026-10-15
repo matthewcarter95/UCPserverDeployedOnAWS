@@ -34,7 +34,7 @@ import ucp_auth
 
 ISSUER_DOMAIN = "test-tenant.example.com"
 AUDIENCE = "api://ucp.session.service"
-NS = "https://demo.okta"
+NS = "https://demo.okta.com"
 CLAIM = f"{NS}/loyaltyId"
 LOYALTY_ID = "4015782993"
 START_POINTS = 3000
@@ -49,8 +49,27 @@ SAVED_ADDRESS = {
   "country": "US",
 }
 
+CARDS = [
+  {"id": "9ef2ff31-a577-48b7-b950-86ba4b67f539", "brand": "American Express",
+   "last4": "4321", "expMonth": 12, "expYear": 2099, "isDefault": True,
+   "name": "Pat Buyer"},
+  {"id": "old-card", "brand": "Visa", "last4": "1111", "expMonth": 1,
+   "expYear": 2020, "isDefault": False, "name": "Pat Buyer"},
+  {"id": "bad-last4", "brand": "Visa", "last4": "12", "expMonth": 5, "expYear": 2099},
+  {"id": "bad-month", "brand": "Visa", "last4": "2222", "expMonth": 13, "expYear": 2099},
+  {"brand": "Visa", "last4": "3333", "expMonth": 5, "expYear": 2099},
+  "not-a-dict",
+]
+
 MANAGE = ucp_auth.SCOPE_CHECKOUT_MANAGE
 COMPLETE = ucp_auth.SCOPE_CHECKOUT_COMPLETE
+
+
+def ucp_auth_card_id(raw_id: str, sub: str = "auth0|buyer1") -> str:
+  """The opaque id the merchant derives for a stored card (test helper)."""
+  import buyer_profile
+
+  return buyer_profile.card_id(sub, raw_id)
 
 
 class LoyaltyTest(it.IntegrationTest):
@@ -132,6 +151,7 @@ class LoyaltyTest(it.IntegrationTest):
     scopes: tuple[str, ...] = (MANAGE, COMPLETE),
     loyalty_id: str | None = LOYALTY_ID,
     profile: bool = False,
+    cards: list | None = None,
     **overrides,
   ) -> str:
     now = int(time.time())
@@ -146,6 +166,8 @@ class LoyaltyTest(it.IntegrationTest):
     }
     if loyalty_id is not None:
       claims[CLAIM] = loyalty_id
+    if cards is not None:
+      claims[f"{NS}/paymentMethods"] = cards
     if profile:
       claims[f"{NS}/name"] = "Pat Q Buyer"
       claims[f"{NS}/email"] = "pat@example.com"
@@ -570,6 +592,145 @@ class LoyaltyTest(it.IntegrationTest):
       )
     self.assertEqual(mine.status_code, 201, mine.text)
     self.assertEqual(other.status_code, 409)
+
+  # ----- saved payment methods -------------------------------------------
+
+  def _offered_cards(self, response):
+    return [
+      i
+      for i in response.json().get("payment", {}).get("instruments", [])
+      if i["type"] == "card"
+    ]
+
+  def test_saved_cards_are_offered_display_only(self) -> None:
+    with self.client:
+      response = self._create_plain("sc1", self._token(cards=CARDS))
+    cards = self._offered_cards(response)
+    self.assertEqual(len(cards), 1, "expired and malformed entries are dropped")
+    card = cards[0]
+    self.assertTrue(card["id"].startswith("pm_"))
+    self.assertNotIn("9ef2ff31", card["id"], "the stored id is not exposed")
+    self.assertEqual(card["handler_id"], "mock_payment_handler")
+    self.assertNotIn("credential", card)
+    self.assertEqual(card["display"]["brand"], "amex")
+    self.assertEqual(card["display"]["last_digits"], "4321")
+    self.assertEqual(card["display"]["expiry_year"], 2099)
+    self.assertIn("ending in 4321", card["display"]["description"])
+    self.assertTrue(card["display"]["default"])
+    self.assertNotIn("Pat Buyer", response.text, "cardholder name is not returned")
+
+  def test_no_cards_offered_without_claim_or_token(self) -> None:
+    with self.client:
+      none = self._create_plain("sc2", self._token())
+      anonymous = self._create_plain("sc3", None)
+      empty = self._create_plain("sc4", self._token(cards=[]))
+    for response in (none, anonymous, empty):
+      self.assertEqual(self._offered_cards(response), [], response.text)
+
+  def test_pay_with_saved_card_by_id_only(self) -> None:
+    token = self._token(cards=CARDS)
+    with self.client:
+      checkout_id, created = self._new_checkout("sc5", token)
+      card = self._offered_cards(created)[0]
+      pay = {"id": card["id"], "handler_id": card["handler_id"], "type": "card"}
+      response = self._complete(checkout_id, "sc6", token, [pay])
+    self.assertEqual(response.status_code, 200, response.text)
+    self.assertEqual(response.json()["status"], "completed")
+
+  def test_saved_card_with_points_split(self) -> None:
+    token = self._token(cards=CARDS)
+    with self.client:
+      checkout_id, created = self._new_checkout("sc7", token)  # $20.00
+      card = self._offered_cards(created)[0]
+      pay = {"id": card["id"], "handler_id": card["handler_id"], "type": "card"}
+      response = self._complete(
+        checkout_id, "sc8", token, [self._points(amount=500), pay]
+      )
+    self.assertEqual(response.status_code, 200, response.text)
+    amounts = {
+      i["id"]: i["amount"] for i in response.json()["payment"]["instruments"]
+    }
+    self.assertEqual(amounts[card["id"]], 1500)
+    self.assertEqual(self._balance(), START_POINTS - 500 + 15)
+
+  def test_another_buyers_card_id_is_refused(self) -> None:
+    mine = self._token(cards=CARDS)
+    other = self._other(cards=CARDS)  # same stored card id, different buyer
+    with self.client:
+      created = self._create_plain("sc9", mine)
+      checkout_id = self.get_resource_id(created.json()["id"])
+      theirs = self._offered_cards(
+        self._create_plain("sc10", other)
+      )[0]
+      stolen = {"id": theirs["id"], "handler_id": theirs["handler_id"], "type": "card"}
+      response = self._complete(checkout_id, "sc11", mine, [stolen])
+    self.assertNotEqual(theirs["id"], self._offered_cards(created)[0]["id"])
+    self.assertEqual(response.status_code, 402, response.text)
+    self.assertEqual(
+      response.json()["messages"][0]["path"], "$.payment.instruments[0]"
+    )
+
+  def test_invented_expired_and_unauthenticated_card_ids_are_refused(self) -> None:
+    token = self._token(cards=CARDS)
+    with self.client:
+      created = self._create_plain("sc12", token)
+      checkout_id = self.get_resource_id(created.json()["id"])
+      expired_id = ucp_auth_card_id("old-card")
+      cases = {
+        "invented": "pm_0000000000000000",
+        "expired": expired_id,
+      }
+      results = {
+        name: self._complete(
+          checkout_id,
+          f"sc13{name}",
+          token,
+          [{"id": cid, "handler_id": "mock_payment_handler", "type": "card"}],
+        )
+        for name, cid in cases.items()
+      }
+      anonymous_card = self._complete(
+        checkout_id,
+        "sc14",
+        self._token(),  # token without the cards claim
+        [{"id": self._offered_cards(created)[0]["id"],
+          "handler_id": "mock_payment_handler", "type": "card"}],
+      )
+    for name, response in results.items():
+      self.assertEqual(response.status_code, 402, (name, response.text))
+    self.assertEqual(anonymous_card.status_code, 402)
+
+  def test_caller_cannot_choose_the_card_credential(self) -> None:
+    """A saved-card id never lets the caller supply a failing/other token."""
+    token = self._token(cards=CARDS)
+    with self.client:
+      checkout_id, created = self._new_checkout("sc15", token)
+      card = self._offered_cards(created)[0]
+      pay = {
+        "id": card["id"],
+        "handler_id": "mock_payment_handler",
+        "type": "card",
+        "credential": {"type": "token", "token": "fail_token"},
+      }
+      response = self._complete(checkout_id, "sc16", token, [pay])
+    # The merchant supplies the credential for a saved card, so a caller-sent
+    # token is ignored rather than honored.
+    self.assertEqual(response.status_code, 200, response.text)
+
+  def test_completed_checkout_no_longer_offers_cards(self) -> None:
+    token = self._token(cards=CARDS)
+    with self.client:
+      checkout_id, created = self._new_checkout("sc17", token)
+      card = self._offered_cards(created)[0]
+      done = self._complete(
+        checkout_id, "sc18", token,
+        [{"id": card["id"], "handler_id": card["handler_id"], "type": "card"}],
+      )
+      after = self.client.get(
+        f"/checkout-sessions/{checkout_id}", headers=self._headers("sc19", token)
+      )
+    self.assertEqual(done.status_code, 200)
+    self.assertEqual(self._offered_cards(after), [])
 
   # ----- orders: owner recorded, owner-only reads, per-buyer list ---------
 

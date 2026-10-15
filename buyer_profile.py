@@ -20,6 +20,7 @@ merchant never accepts these from the caller as identity: they come only from
 the validated access token.
 """
 
+import datetime
 import hashlib
 from typing import Any
 
@@ -100,3 +101,99 @@ def address_from(identity: ucp_auth.Identity | None) -> dict[str, Any] | None:
   if raw.get("label"):
     fields["label"] = str(raw["label"])
   return fields
+
+
+# Saved cards -----------------------------------------------------------------
+
+SAVED_CARD_PREFIX = "pm_"
+CARD_HANDLER_ID = "mock_payment_handler"
+
+_BRANDS = {
+  "american express": "amex",
+  "amex": "amex",
+  "mastercard": "mastercard",
+  "master card": "mastercard",
+  "visa": "visa",
+  "discover": "discover",
+  "diners club": "diners",
+  "jcb": "jcb",
+}
+
+
+def card_id(sub: str, raw_id: str) -> str:
+  """Opaque, buyer-scoped id for a saved card.
+
+  Derived from the buyer's `sub`, so another buyer's token can never produce
+  (or match) it, and the stored id is not exposed.
+  """
+  digest = hashlib.sha256(f"card|{sub}|{raw_id}".encode()).hexdigest()[:16]
+  return f"{SAVED_CARD_PREFIX}{digest}"
+
+
+def _brand(value: Any) -> str:
+  text = str(value or "card").strip().lower()
+  return _BRANDS.get(text, text.replace(" ", "_") or "card")
+
+
+def saved_cards(
+  identity: ucp_auth.Identity | None,
+  today: datetime.date | None = None,
+) -> dict[str, dict[str, Any]]:
+  """Return the buyer's valid saved cards keyed by their opaque id.
+
+  Malformed entries are skipped. Each value holds the display fields plus
+  `expired` (a card is good through the end of its expiry month) and `default`.
+  """
+  if identity is None or not identity.payment_methods:
+    return {}
+  today = today or datetime.datetime.now(datetime.timezone.utc).date()
+  cards: dict[str, dict[str, Any]] = {}
+  for method in identity.payment_methods:
+    raw_id = method.get("id")
+    last4 = str(method.get("last4") or "")
+    month, year = method.get("expMonth"), method.get("expYear")
+    if (
+      not isinstance(raw_id, str)
+      or not raw_id
+      or not (len(last4) == 4 and last4.isdigit())
+      or not isinstance(month, int)
+      or isinstance(month, bool)
+      or not 1 <= month <= 12
+      or not isinstance(year, int)
+      or isinstance(year, bool)
+    ):
+      continue
+    brand = _brand(method.get("brand"))
+    label = str(method.get("brand") or "Card").strip()
+    cards[card_id(identity.sub, raw_id)] = {
+      "display": {
+        "brand": brand,
+        "last_digits": last4,
+        "expiry_month": month,
+        "expiry_year": year,
+        "description": f"{label} ending in {last4}, expires {month:02d}/{year}",
+        "default": bool(method.get("isDefault")),
+      },
+      "expired": (year, month) < (today.year, today.month),
+    }
+  return cards
+
+
+def saved_card_instruments(
+  identity: ucp_auth.Identity | None,
+) -> list[dict[str, Any]]:
+  """Saved cards as business-owned payment instruments (display only).
+
+  Expired cards are not offered. No credential is returned: the business
+  resolves it server-side when the buyer selects the instrument.
+  """
+  return [
+    {
+      "id": instrument_id,
+      "handler_id": CARD_HANDLER_ID,
+      "type": "card",
+      "display": card["display"],
+    }
+    for instrument_id, card in saved_cards(identity).items()
+    if not card["expired"]
+  ]
