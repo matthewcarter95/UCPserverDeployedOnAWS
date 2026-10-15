@@ -45,31 +45,18 @@ echo ""
 echo "Running SAM build..."
 sam build
 
-# Clean up SQLAlchemy-dependent files from Lambda package
+# The Lambda reuses the shared server code (server.py, config.py, services/,
+# routes/) and swaps config -> config_lambda and db -> db_dynamodb at import
+# time (see lambda_handler.py). Only strip files that are never imported in
+# Lambda and would drag in SQLAlchemy / absl.
 echo ""
-echo "Cleaning up SQLAlchemy dependencies from Lambda package..."
-rm -f .aws-sam/build/UcpServerFunction/db.py
-rm -f .aws-sam/build/UcpServerFunction/config.py
-rm -f .aws-sam/build/UcpServerFunction/dependencies.py
-rm -f .aws-sam/build/UcpServerFunction/server.py
-rm -f .aws-sam/build/UcpServerFunction/services/checkout_service.py
-rm -f .aws-sam/build/UcpServerFunction/services/fulfillment_service.py
-rm -f .aws-sam/build/UcpServerFunction/routes/order.py
-rm -f .aws-sam/build/UcpServerFunction/routes/ucp_implementation.py
-rm -f .aws-sam/build/UcpServerFunction/dump_*.py
-rm -f .aws-sam/build/UcpServerFunction/import_csv.py
-rm -f .aws-sam/build/UcpServerFunction/integration_test.py
-rm -f .aws-sam/build/DataInitFunction/db.py
-rm -f .aws-sam/build/DataInitFunction/config.py
-rm -f .aws-sam/build/DataInitFunction/dependencies.py
-rm -f .aws-sam/build/DataInitFunction/server.py
-rm -f .aws-sam/build/DataInitFunction/services/checkout_service.py
-rm -f .aws-sam/build/DataInitFunction/services/fulfillment_service.py
-rm -f .aws-sam/build/DataInitFunction/routes/order.py
-rm -f .aws-sam/build/DataInitFunction/routes/ucp_implementation.py
-rm -f .aws-sam/build/DataInitFunction/dump_*.py
-rm -f .aws-sam/build/DataInitFunction/import_csv.py
-rm -f .aws-sam/build/DataInitFunction/integration_test.py
+echo "Cleaning up local-only files from Lambda package..."
+for fn in UcpServerFunction DataInitFunction; do
+  rm -f .aws-sam/build/$fn/db.py
+  rm -f .aws-sam/build/$fn/dump_*.py
+  rm -f .aws-sam/build/$fn/import_csv.py
+  rm -f .aws-sam/build/$fn/integration_test.py
+done
 
 echo "Cleanup complete. Lambda package ready for deployment."
 echo ""

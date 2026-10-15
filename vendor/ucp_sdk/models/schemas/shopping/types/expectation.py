@@ -19,51 +19,53 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal
-from . import postal_address
+
+from ...common.types import postal_address
 
 
 class LineItem(BaseModel):
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    id: str
+    """
     Line item ID reference.
     """
-  quantity: int = Field(..., ge=1)
-  """
-    Quantity of this item in this expectation.
+    quantity: int = Field(..., ge=1, le=9007199254740991)
+    """
+    Integer count of steps of the referenced line item's `quantity_unit` (`10^-scale` × `unit`); when `quantity_unit` is absent, it counts whole items (`each`).
     """
 
 
 class Expectation(BaseModel):
-  """Buyer-facing fulfillment expectation representing logical groupings of items (e.g., 'package'). Can be split, merged, or adjusted post-order to set buyer expectations for when/how items arrive."""
+    """
+    Buyer-facing fulfillment expectation representing logical groupings of items (e.g., 'package'). Can be split, merged, or adjusted post-order to set buyer expectations for when/how items arrive.
+    """
 
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    id: str
+    """
     Expectation identifier.
     """
-  line_items: list[LineItem]
-  """
+    line_items: list[LineItem]
+    """
     Which line items and quantities are in this expectation.
     """
-  method_type: Literal["shipping", "pickup", "digital"]
-  """
-    Delivery method type (shipping, pickup, digital).
+    method_type: str
     """
-  destination: postal_address.PostalAddress
-  """
+    Delivery method type. Well-known values: `shipping`, `pickup`, `digital`; additional values MAY be used.
+    """
+    destination: postal_address.PostalAddress
+    """
     Delivery destination address.
     """
-  description: str | None = None
-  """
+    description: str | None = None
+    """
     Human-readable delivery description (e.g., 'Arrives in 5-8 business days').
     """
-  fulfillable_on: str | None = None
-  """
+    fulfillable_on: str | None = None
+    """
     When this expectation can be fulfilled: 'now' or ISO 8601 timestamp for future date (backorder, pre-order).
     """

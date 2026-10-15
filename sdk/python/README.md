@@ -22,36 +22,106 @@
   <b>Official Python library for the Universal Commerce Protocol (UCP).</b>
 </p>
 
+<p align="center">
+  <a href="https://pypi.org/project/ucp-sdk/"><img src="https://img.shields.io/pypi/v/ucp-sdk" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/ucp-sdk/"><img src="https://img.shields.io/pypi/pyversions/ucp-sdk" alt="Python versions"></a>
+  <a href="https://github.com/Universal-Commerce-Protocol/python-sdk/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Universal-Commerce-Protocol/python-sdk" alt="License"></a>
+</p>
+
 ## Overview
 
 This repository contains the Python SDK for the
 [Universal Commerce Protocol (UCP)](https://ucp.dev). It provides Pydantic
-models for UCP schemas, making it easy to build UCP-compliant applications
-in Python.
+models for UCP schemas, making it easy to build UCP-compliant applications in
+Python.
+
+### UCP Version Compatibility
+
+Each version of the Python SDK is generated against a specific version of the
+UCP schema:
+
+| SDK Version       | UCP Schema Version |
+| ----------------- | ------------------ |
+| **`0.5.x`**       | **`2026-08-25`**   |
+| `0.4.x`           | `2026-04-08`       |
+| `0.3.x`           | `2026-01-23`       |
+| `0.2.x` / `0.1.x` | `2026-01-11`       |
 
 ## Installation
 
-For now, you can install the SDK using the following commands:
+To use this SDK in your own project, install it from PyPI:
 
 ```bash
-# Create a directory for the SDK
-mkdir sdk
+pip install ucp-sdk
+```
 
-# Clone the repository
-git clone https://github.com/Universal-Commerce-Protocol/python-sdk.git sdk/python
+Or, if you are managing your project with [uv](https://docs.astral.sh/uv/):
 
-# Navigate to the directory
-cd sdk/python
+```bash
+uv add ucp-sdk
+```
 
-# Install dependencies
-uv sync
+## Usage
+
+The example below parses a UCP checkout response and reads typed fields:
+
+```python
+from ucp_sdk.models.schemas.shopping.checkout import Checkout
+
+# Parse a UCP checkout response
+checkout = Checkout.model_validate(checkout_data)
+
+# Access typed fields
+print(checkout.status)       # "incomplete" | "ready_for_complete" | ...
+print(checkout.currency)     # ISO 4217 currency code
+for item in checkout.line_items:
+    print(f"{item.item.title}: {item.quantity}")
+```
+
+### Available model packages
+
+| Package                                 | Description                                                       |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| `ucp_sdk.models.schemas.common`         | Location search/lookup, identity linking, loyalty, payment terms  |
+| `ucp_sdk.models.schemas.common.types`   | Shared primitives (amounts, prices, totals, postal address, etc.) |
+| `ucp_sdk.models.schemas.shopping`       | Checkout, cart, catalog, order, buyer consent, permalink models   |
+| `ucp_sdk.models.schemas.shopping.types` | Line items, adjustments, fulfillments, destinations, attribution  |
+| `ucp_sdk.models.schemas.transports`     | REST, MCP, and embedded protocol bindings                         |
+| `ucp_sdk.models.schemas`                | Service definitions, capabilities, profile, payment handlers      |
+
+### Validation
+
+All models support Pydantic validation and serialization:
+
+```python
+from pydantic import ValidationError
+from ucp_sdk.models.schemas.shopping.checkout import Checkout
+
+# Validate data against UCP schemas
+try:
+    checkout = Checkout.model_validate(checkout_data)
+    # Serialize to JSON-compatible dict
+    checkout_dict = checkout.model_dump(exclude_none=True)
+except ValidationError as e:
+    print(e.errors())
 ```
 
 ## Development
 
 ### Prerequisites
 
-This project uses `uv` for dependency management.
+This project uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
+
+### Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/Universal-Commerce-Protocol/python-sdk.git
+cd python-sdk
+
+# Install dependencies
+uv sync
+```
 
 ### Generating Pydantic Models
 
@@ -62,14 +132,30 @@ To regenerate the models:
 
 ```bash
 uv sync
-./generate_models.sh
+./generate_models.sh <version>
 ```
+
+Where `<version>` is the version of the UCP specification to use (for example,
+"2026-08-25").
+
+If no version is specified, the `main` branch of the
+[UCP repo](https://github.com/Universal-Commerce-Protocol/ucp) will be used.
 
 The generated code is automatically formatted using `ruff`.
 
+### Running Tests
+
+Run the schema preprocessing test suite with:
+
+```bash
+uv run python -m unittest discover -s tests -p "test_*.py"
+```
+
 ## Contributing
 
-We welcome community contributions. See our [Contribution Guide](https://github.com/Universal-Commerce-Protocol/ucp/blob/main/CONTRIBUTING.md) for details.
+We welcome community contributions. See our
+[Contribution Guide](https://github.com/Universal-Commerce-Protocol/.github/blob/main/CONTRIBUTING.md)
+for details.
 
 ## License
 

@@ -1,113 +1,250 @@
 {
   "ucp": {
-    "version": "2026-01-11",
+    "version": "2026-08-25",
     "services": {
-      "dev.ucp.shopping": {
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/reference",
-        "rest": {
-          "schema": "https://ucp.dev/services/shopping/rest.openapi.json",
-          "endpoint": "{{ENDPOINT}}"
+      "dev.ucp.shopping": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/overview",
+          "transport": "rest",
+          "endpoint": "{{ENDPOINT}}",
+          "schema": "https://ucp.dev/2026-08-25/services/shopping/rest.openapi.json"
         }
-      }
+      ]
     },
-    "capabilities": [
-      {
-        "name": "dev.ucp.shopping.checkout",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/checkout",
-        "schema": "https://ucp.dev/schemas/shopping/checkout.json"
-      },
-      {
-        "name": "dev.ucp.shopping.order",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/order",
-        "schema": "https://ucp.dev/schemas/shopping/order.json"
-      },
-      {
-        "name": "dev.ucp.shopping.discount",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/discount",
-        "schema": "https://ucp.dev/schemas/shopping/discount.json",
-        "extends": "dev.ucp.shopping.checkout"
-      },
-      {
-        "name": "dev.ucp.shopping.fulfillment",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/fulfillment",
-        "schema": "https://ucp.dev/schemas/shopping/fulfillment.json",
-        "extends": "dev.ucp.shopping.checkout"
-      },
-      {
-        "name": "dev.ucp.shopping.buyer_consent",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/buyer-consent",
-        "schema": "https://ucp.dev/schemas/shopping/buyer_consent.json",
-        "extends": "dev.ucp.shopping.checkout"
-      },
-      {
-        "name": "dev.ucp.shopping.catalog",
-        "version": "2026-01-11",
-        "spec": "https://ucp.dev/specification/catalog",
-        "schema": "https://ucp.dev/schemas/shopping/catalog.json",
-        "description": "Product catalog browsing and discovery"
-      }
-    ]
-  },
-  "payment": {
-    "handlers": [
-      {
-        "id": "shop_pay",
-        "name": "dev.shopify.shop_pay",
-        "version": "2026-01-11",
-        "spec": "https://shopify.dev/docs/agents/checkout/shop-pay-handler",
-        "config_schema": "https://shopify.dev/ucp/shop-pay-handler/2026-01-11/config.json",
-        "instrument_schemas": [
-          "https://shopify.dev/ucp/shop-pay-handler/2026-01-11/instrument.json"
-        ],
-        "config": {
-          "shop_id": "{{SHOP_ID}}"
+    "capabilities": {
+      "dev.ucp.shopping.checkout": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/checkout",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/checkout.json"
         }
-      },
-      {
-        "id": "google_pay",
-        "name": "com.google.pay",
-        "version": "2026-01-11",
-        "spec": "https://pay.google.com/gp/p/ucp/2026-01-11/",
-        "config_schema": "https://pay.google.com/gp/p/ucp/2026-01-11/schemas/config.json",
-        "instrument_schemas": [
-          "https://pay.google.com/gp/p/ucp/2026-01-11/schemas/card_payment_instrument.json"
-        ],
-        "config": {
-          "api_version": 2,
-          "api_version_minor": 0,
-          "merchant_info": {
-            "merchant_name": "Flower Shop",
-            "merchant_id": "TEST",
-            "merchant_origin": "localhost"
-          },
-          "allowed_payment_methods": [
-            {
-              "type": "CARD",
-              "parameters": {
-                "allowedAuthMethods": ["PAN_ONLY", "CRYPTOGRAM_3DS"],
-                "allowedCardNetworks": ["VISA", "MASTERCARD"]
-              },
-              "tokenization_specification": [
-                {
-                  "type": "PAYMENT_GATEWAY",
-                  "parameters": [
-                    {
-                      "gateway": "example",
-                      "gatewayMerchantId": "exampleGatewayMerchantId"
-                    }
-                  ]
-                }
-              ]
-            }
+      ],
+      "dev.ucp.shopping.cart": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/cart",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/cart.json"
+        }
+      ],
+      "dev.ucp.shopping.order": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/order",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/order.json"
+        }
+      ],
+      "dev.ucp.shopping.discount": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/discount",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/discount.json",
+          "extends": [
+            "dev.ucp.shopping.checkout",
+            "dev.ucp.shopping.cart"
           ]
         }
-      }
-    ]
+      ],
+      "dev.ucp.shopping.fulfillment": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/fulfillment",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/fulfillment.json",
+          "extends": "dev.ucp.shopping.checkout"
+        }
+      ],
+      "dev.ucp.shopping.buyer_consent": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/buyer-consent",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/buyer_consent.json",
+          "extends": "dev.ucp.shopping.checkout"
+        }
+      ],
+      "dev.ucp.shopping.catalog.search": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/search",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_search.json"
+        }
+      ],
+      "dev.ucp.shopping.catalog.lookup": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/shopping/catalog/lookup",
+          "schema": "https://ucp.dev/2026-08-25/schemas/shopping/catalog_lookup.json"
+        }
+      ],
+      "dev.ucp.common.loyalty": [
+        {
+          "version": "2026-08-25",
+          "extends": [
+            "dev.ucp.shopping.catalog.search",
+            "dev.ucp.shopping.catalog.lookup",
+            "dev.ucp.shopping.cart",
+            "dev.ucp.shopping.checkout"
+          ],
+          "spec": "https://ucp.dev/2026-08-25/specification/common/extensions/loyalty",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/loyalty.json"
+        }
+      ],
+      "dev.ucp.common.payment.split_payments": [
+        {
+          "version": "2026-08-25",
+          "extends": "dev.ucp.shopping.checkout",
+          "spec": "https://ucp.dev/2026-08-25/specification/payment/extensions/split-payments",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/payment_split_payments.json",
+          "config": {
+            "allowed_combinations": [
+              [
+                {
+                  "types": [
+                    "card",
+                    "tokenized_card"
+                  ],
+                  "min": 1,
+                  "max": 1
+                },
+                {
+                  "types": [
+                    "loyalty"
+                  ],
+                  "max": 1
+                }
+              ],
+              [
+                {
+                  "types": [
+                    "loyalty"
+                  ],
+                  "min": 1,
+                  "max": 1
+                }
+              ]
+            ]
+          }
+        }
+      ],
+      "dev.ucp.common.identity_linking": [
+        {
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/specification/common/identity-linking/",
+          "schema": "https://ucp.dev/2026-08-25/schemas/common/identity_linking.json",
+          "config": {
+            "scopes": {
+              "mock.ucp.shopping.checkout:manage": {
+                "description": {
+                  "plain": "Create, update and cancel checkouts and carts on your behalf."
+                }
+              },
+              "mock.ucp.shopping.checkout:complete": {
+                "description": {
+                  "plain": "Complete a purchase and spend loyalty points on your behalf."
+                }
+              },
+              "mock.ucp.shopping.order:read": {
+                "description": {
+                  "plain": "View your orders."
+                }
+              },
+              "mock.ucp.shopping.order:manage": {
+                "description": {
+                  "plain": "Cancel, return or modify your orders."
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "payment_handlers": {
+      "dev.shopify.shop_pay": [
+        {
+          "id": "shop_pay",
+          "name": "com.shopify.shop_pay",
+          "version": "2026-01-11",
+          "spec": "https://shopify.dev/docs/agents/checkout/shop-pay-handler",
+          "config_schema": "https://shopify.dev/ucp/shop-pay-handler/2026-01-11/config.json",
+          "instrument_schemas": [
+            "https://shopify.dev/ucp/shop-pay-handler/2026-01-11/instrument.json"
+          ],
+          "config": {
+            "shop_id": "{{SHOP_ID}}"
+          }
+        }
+      ],
+      "com.google.pay": [
+        {
+          "id": "google_pay",
+          "name": "com.google.pay",
+          "version": "2026-01-11",
+          "spec": "https://pay.google.com/gp/p/ucp/2026-01-11/",
+          "config_schema": "https://pay.google.com/gp/p/ucp/2026-01-11/schemas/config.json",
+          "instrument_schemas": [
+            "https://pay.google.com/gp/p/ucp/2026-01-11/schemas/card_payment_instrument.json"
+          ],
+          "config": {
+            "api_version": 2,
+            "api_version_minor": 0,
+            "merchant_info": {
+              "merchant_name": "Flower Shop",
+              "merchant_id": "TEST",
+              "merchant_origin": "localhost"
+            },
+            "allowed_payment_methods": [
+              {
+                "type": "CARD",
+                "parameters": {
+                  "allowedAuthMethods": [
+                    "PAN_ONLY",
+                    "CRYPTOGRAM_3DS"
+                  ],
+                  "allowedCardNetworks": [
+                    "VISA",
+                    "MASTERCARD"
+                  ]
+                },
+                "tokenization_specification": [
+                  {
+                    "type": "PAYMENT_GATEWAY",
+                    "parameters": [
+                      {
+                        "gateway": "example",
+                        "gatewayMerchantId": "exampleGatewayMerchantId"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "dev.mock.payment_handler": [
+        {
+          "id": "mock_payment_handler",
+          "name": "mock_payment_handler",
+          "version": "2026-08-25",
+          "spec": "https://ucp.dev/2026-08-25/schemas/mock_payment_handler/spec",
+          "config": {}
+        }
+      ],
+      "mock.loyalty_points": [
+        {
+          "id": "mock_loyalty_points",
+          "name": "mock.loyalty_points",
+          "version": "2026-08-25",
+          "spec": "https://example.com/mock/loyalty-points-handler",
+          "config": {
+            "currency": {
+              "name": "Petals",
+              "code": "PTL"
+            },
+            "cents_per_point": 1,
+            "max_redeem_percent": 50
+          }
+        }
+      ]
+    }
   }
 }

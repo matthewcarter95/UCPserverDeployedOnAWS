@@ -18,55 +18,65 @@
 
 from __future__ import annotations
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from typing import Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+
+from ...common.types import measure as measure_1
+from ...common.types import total
 
 
 class LineItem(BaseModel):
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    id: str
+    """
     Line item ID reference.
     """
-  quantity: int = Field(..., ge=1)
-  """
-    Quantity affected by this adjustment.
+    quantity: int = Field(..., ge=-9007199254740991, le=9007199254740991)
+    """
+    Signed integer count of steps of the referenced line item's `quantity_unit` (`10^-scale` × `unit`); when `quantity_unit` is absent, it counts whole items (`each`). Negative values represent reductions (e.g. returns); positive values represent additions (e.g. exchanges).
+    """
+    measure: measure_1.Measure | None = None
+    """
+    The settled measurement this adjustment reconciles (for example, actual picked weight), present when the line's price settles by measurement. Its unit identity MUST match the line's pricing basis (`item.unit_price` measure/reference unit); no unit conversion. A pure price settlement uses `quantity: 0` together with `measure` and a totals delta.
     """
 
 
 class Adjustment(BaseModel):
-  """Append-only event that exists independently of fulfillment. Typically represents money movements but can be any post-order change. Polymorphic type that can optionally reference line items."""
+    """
+    Post-order event that exists independently of fulfillment. Typically represents money movements but can be any post-order change. Polymorphic type that can optionally reference line items.
+    """
 
-  model_config = ConfigDict(
-    extra="allow",
-  )
-  id: str
-  """
+    model_config = ConfigDict(
+        extra="allow",
+    )
+    id: str
+    """
     Adjustment event identifier.
     """
-  type: str
-  """
+    type: str
+    """
     Type of adjustment (open string). Typically money-related like: refund, return, credit, price_adjustment, dispute, cancellation. Can be any value that makes sense for the merchant's business.
     """
-  occurred_at: AwareDatetime
-  """
+    occurred_at: AwareDatetime
+    """
     RFC 3339 timestamp when this adjustment occurred.
     """
-  status: Literal["pending", "completed", "failed"]
-  """
+    status: Literal["pending", "completed", "failed"]
+    """
     Adjustment status.
     """
-  line_items: list[LineItem] | None = None
-  """
+    line_items: list[LineItem] | None = None
+    """
     Which line items and quantities are affected (optional).
     """
-  amount: int | None = None
-  """
-    Amount in minor units (cents) for refunds, credits, price adjustments (optional).
+    totals: list[total.Total] | None = None
     """
-  description: str | None = None
-  """
+    Adjustment totals breakdown. Signed values - negative for money returned to buyer (refunds, credits), positive for additional charges (exchanges).
+    """
+    description: str | None = None
+    """
     Human-readable reason or description (e.g., 'Defective item', 'Customer requested').
     """

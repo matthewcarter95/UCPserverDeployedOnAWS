@@ -2,6 +2,32 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: UCP Merchant Server - Serverless FastAPI Application
 
+Parameters:
+  Auth0Domain:
+    Type: String
+    Default: auth0connectedapps.demo-connect.us
+    Description: Auth0 custom domain that issues access tokens (the iss claim)
+  AuthAudience:
+    Type: String
+    Default: api://ucp.session.service
+    Description: Resource server identifier expected in the token aud claim
+  AuthMode:
+    Type: String
+    Default: enforce
+    AllowedValues: [off, optional, enforce]
+  AllowedClientIds:
+    Type: CommaDelimitedList
+    Default: "PX3u5zLgnC39WzYFnGU6Aval5V9xabGd"
+    Description: Auth0 client ids (azp) permitted to call this merchant
+  OrderPageBaseUrl:
+    Type: String
+    Default: https://smitty.demo-connect.us
+    Description: Merchant web app origin. Order permalink_url becomes <this>/orders/<id>; blank uses this API's own /orders/<id>
+  LoyaltyClaim:
+    Type: String
+    Default: https://demo.okta.com/loyaltyId
+    Description: Access-token claim that carries the buyer's loyaltyId
+
 Globals:
   Function:
     Timeout: 30
@@ -24,9 +50,42 @@ Globals:
         IDEMPOTENCY_TABLE: !Ref IdempotencyTable
         REQUEST_LOGS_TABLE: !Ref RequestLogsTable
         PAYMENT_INSTRUMENTS_TABLE: !Ref PaymentInstrumentsTable
+        CARTS_TABLE: !Ref CartsTable
+        LOYALTY_LEDGER_TABLE: !Ref LoyaltyLedgerTable
+        LOYALTY_POINTS_TABLE: RetailLoyaltyPointsTracker
+        AUTH0_DOMAIN: !Ref Auth0Domain
+        AUTH_AUDIENCE: !Ref AuthAudience
+        AUTH_MODE: !Ref AuthMode
+        AUTH_ALLOWED_CLIENT_IDS: !Join [',', !Ref AllowedClientIds]
+        LOYALTY_CLAIM: !Ref LoyaltyClaim
+        ORDER_PAGE_BASE_URL: !Ref OrderPageBaseUrl
 
 Resources:
   # DynamoDB Tables
+  LoyaltyLedgerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-loyalty-ledger'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entry_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entry_id
+          KeyType: HASH
+
+  CartsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-carts'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
   ProductsTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -71,9 +130,22 @@ Resources:
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
+        - AttributeName: buyer_sub
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
       KeySchema:
         - AttributeName: id
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: buyer-sub-index
+          KeySchema:
+            - AttributeName: buyer_sub
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
 
   CustomersTable:
     Type: AWS::DynamoDB::Table
@@ -257,6 +329,18 @@ Resources:
             TableName: !Ref PaymentInstrumentsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref TransactionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CartsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LoyaltyLedgerTable
+        # Existing balance table owned outside this stack. Our writes are
+        # conditional (see db_dynamodb.reserve_loyalty_points).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/RetailLoyaltyPointsTracker'
       FunctionUrlConfig:
         AuthType: NONE
         Cors:

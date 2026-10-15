@@ -38,8 +38,8 @@ from typing import Any
 import uuid
 
 from sqlalchemy import Column
-from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
+from sqlalchemy import func
 from sqlalchemy import Integer
 from sqlalchemy import JSON
 from sqlalchemy import select
@@ -122,21 +122,6 @@ class Product(ProductBase):
   title = Column(String)
   price = Column(Integer)  # Price in cents
   image_url = Column(String, nullable=True)
-  description = Column(String, nullable=True)
-  brand = Column(String, nullable=True, default="Flower Shop")
-  category = Column(String, nullable=True)
-  created_at = Column(
-    DateTime,
-    nullable=True,
-    default=lambda: datetime.datetime.now(datetime.timezone.utc)
-  )
-  updated_at = Column(
-    DateTime,
-    nullable=True,
-    default=lambda: datetime.datetime.now(datetime.timezone.utc),
-    onupdate=lambda: datetime.datetime.now(datetime.timezone.utc)
-  )
-  link = Column(String, nullable=True)
 
 
 class Promotion(ProductBase):
@@ -199,6 +184,15 @@ class CheckoutSession(TransactionBase):
   data = Column(JSON)
 
 
+class CartSession(TransactionBase):
+  """Cart session database model."""
+
+  __tablename__ = "carts"
+
+  id = Column(String, primary_key=True)
+  data = Column(JSON)
+
+
 class Order(TransactionBase):
   """Order database model."""
 
@@ -206,6 +200,12 @@ class Order(TransactionBase):
 
   id = Column(String, primary_key=True)
   data = Column(JSON)
+  # Owner of the order, from the verified identity at creation. Kept outside
+  # `data` because the UCP Order schema has no buyer field. Null for orders
+  # placed without an authenticated buyer.
+  buyer_sub = Column(String, index=True, nullable=True)
+  buyer_email = Column(String, nullable=True)
+  created_at = Column(String, nullable=True)
 
 
 class RequestLog(TransactionBase):
@@ -244,6 +244,28 @@ class PaymentInstrument(TransactionBase):
   last_digits = Column(String)
   token = Column(String)
   handler_id = Column(String)
+
+
+class LoyaltyAccount(TransactionBase):
+  """Loyalty points balance for a buyer (local stand-in for DynamoDB)."""
+
+  __tablename__ = "loyalty_accounts"
+
+  loyalty_id = Column(String, primary_key=True)
+  balance = Column(Integer, nullable=False, default=0)
+
+
+class LoyaltyLedger(TransactionBase):
+  """Append-only record of points reservations and credits."""
+
+  __tablename__ = "loyalty_ledger"
+
+  entry_id = Column(String, primary_key=True)
+  loyalty_id = Column(String, nullable=False)
+  kind = Column(String, nullable=False)  # 'redeem' | 'earn'
+  points = Column(Integer, nullable=False)
+  status = Column(String, nullable=False)  # reserved|committed|released|credited
+  created_at = Column(String)
 
 
 class Discount(TransactionBase):
@@ -304,7 +326,10 @@ async def get_discount(session: AsyncSession, code: str) -> Discount | None:
     The Discount object if found, otherwise None.
 
   """
-  return await session.get(Discount, code)
+  result = await session.execute(
+    select(Discount).where(func.upper(Discount.code) == code.upper())
+  )
+  return result.scalars().first()
 
 
 async def get_discounts_by_codes(
@@ -321,7 +346,9 @@ async def get_discounts_by_codes(
 
   """
   result = await session.execute(
-    select(Discount).where(Discount.code.in_(codes))
+    select(Discount).where(
+      func.upper(Discount.code).in_([c.upper() for c in codes])
+    )
   )
   return list(result.scalars().all())
 
@@ -471,16 +498,73 @@ async def get_checkout_session(
   return None
 
 
-async def save_order(
-  session: AsyncSession, order_id: str, order_obj: dict[str, Any]
+async def save_cart(
+  session: AsyncSession,
+  cart_id: str,
+  cart_obj: dict[str, Any],
 ) -> None:
-  """Save or update an order."""
+  """Save or update a cart session."""
+  existing = await session.get(CartSession, cart_id)
+  if existing:
+    existing.data = cart_obj
+  else:
+    new_cart = CartSession(id=cart_id, data=cart_obj)
+    session.add(new_cart)
+
+
+async def get_cart_session(
+  session: AsyncSession, cart_id: str
+) -> dict[str, Any] | None:
+  """Retrieve a cart session by ID."""
+  result = await session.get(CartSession, cart_id)
+  if result:
+    return result.data
+  return None
+
+
+async def delete_cart_session(session: AsyncSession, cart_id: str) -> None:
+  """Delete a cart session by ID."""
+  existing = await session.get(CartSession, cart_id)
+  if existing:
+    await session.delete(existing)
+
+
+async def get_checkouts_by_cart_id(
+  session: AsyncSession, cart_id: str
+) -> list[dict[str, Any]]:
+  """Retrieve all checkout sessions by cart ID."""
+  stmt = select(CheckoutSession).where(
+    CheckoutSession.data["cart_id"].as_string() == cart_id
+  )
+  result = await session.execute(stmt)
+  return [r.data for r in result.scalars().all()]
+
+
+async def save_order(
+  session: AsyncSession,
+  order_id: str,
+  order_obj: dict[str, Any],
+  buyer_sub: str | None = None,
+  buyer_email: str | None = None,
+) -> None:
+  """Save or update an order.
+
+  The buyer is recorded when the order is created and never changed by later
+  saves (shipping events, updates), which pass no buyer.
+  """
   existing = await session.get(Order, order_id)
   if existing:
     existing.data = order_obj
   else:
-    new_order = Order(id=order_id, data=order_obj)
-    session.add(new_order)
+    session.add(
+      Order(
+        id=order_id,
+        data=order_obj,
+        buyer_sub=buyer_sub,
+        buyer_email=buyer_email,
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+      )
+    )
 
 
 async def get_order(
@@ -491,6 +575,32 @@ async def get_order(
   if result:
     return result.data
   return None
+
+
+async def get_order_owner(
+  session: AsyncSession, order_id: str
+) -> str | None:
+  """Return the order's buyer_sub (None when unowned or missing)."""
+  result = await session.get(Order, order_id)
+  return result.buyer_sub if result else None
+
+
+async def list_orders_for_buyer(
+  session: AsyncSession, buyer_sub: str, limit: int, offset: int
+) -> tuple[list[dict[str, Any]], int]:
+  """Return (a page of this buyer's orders newest first, total count)."""
+  base = select(Order).where(Order.buyer_sub == buyer_sub)
+  total = (
+    await session.execute(
+      select(func.count()).select_from(base.subquery())
+    )
+  ).scalar_one()
+  rows = (
+    await session.execute(
+      base.order_by(Order.created_at.desc(), Order.id).limit(limit).offset(offset)
+    )
+  ).scalars().all()
+  return [r.data for r in rows], int(total)
 
 
 async def log_request(
@@ -536,40 +646,109 @@ async def save_idempotency_record(
   session.add(record)
 
 
-async def list_all_products(session: AsyncSession) -> list[Product]:
-  """Retrieve all products from the database.
-
-  Args:
-    session: The database session to use.
-
-  Returns:
-    A list of all Product objects.
-
-  """
-  result = await session.execute(select(Product))
-  return list(result.scalars().all())
+# --- Loyalty points ---
 
 
-async def list_products_with_inventory(
-  session_products: AsyncSession,
-  session_transactions: AsyncSession
-) -> list[tuple[Product, int]]:
-  """Retrieve all products with their inventory quantities.
+async def get_loyalty_balance(
+  session: AsyncSession, loyalty_id: str
+) -> int | None:
+  """Return the points balance, or None if the account does not exist."""
+  account = await session.get(LoyaltyAccount, str(loyalty_id))
+  return account.balance if account else None
 
-  Args:
-    session_products: The products database session.
-    session_transactions: The transactions database session.
+
+async def reserve_loyalty_points(
+  session: AsyncSession, loyalty_id: str, points: int, entry_id: str
+) -> str:
+  """Atomically deduct points and record the reservation.
+
+  Idempotent on `entry_id`: a reserved or committed entry is left alone, and a
+  released one (an earlier attempt that failed) is reserved again.
 
   Returns:
-    A list of tuples containing (Product, inventory_quantity).
-    Products with no inventory record default to quantity 0.
-
+    'reserved', 'exists' (already reserved/committed; nothing deducted) or
+    'insufficient'.
   """
-  products = await list_all_products(session_products)
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if entry and entry.status != "released":
+    return "exists"
+  result = await session.execute(
+    update(LoyaltyAccount)
+    .where(LoyaltyAccount.loyalty_id == str(loyalty_id))
+    .where(LoyaltyAccount.balance >= points)
+    .values(balance=LoyaltyAccount.balance - points)
+  )
+  if result.rowcount == 0:
+    return "insufficient"
+  if entry:
+    entry.status = "reserved"
+    entry.points = points
+  else:
+    session.add(
+      LoyaltyLedger(
+        entry_id=entry_id,
+        loyalty_id=str(loyalty_id),
+        kind="redeem",
+        points=points,
+        status="reserved",
+        created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+      )
+    )
+  return "reserved"
 
-  # Fetch all inventory records
-  result = await session_transactions.execute(select(Inventory))
-  inventory_map = {inv.product_id: inv.quantity for inv in result.scalars().all()}
 
-  # Combine products with inventory
-  return [(product, inventory_map.get(product.id, 0)) for product in products]
+async def get_loyalty_entry(
+  session: AsyncSession, entry_id: str
+) -> dict[str, Any] | None:
+  """Return {'points', 'status'} for a ledger entry, or None."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  return {"points": entry.points, "status": entry.status} if entry else None
+
+
+async def release_loyalty_points(
+  session: AsyncSession, loyalty_id: str, entry_id: str
+) -> bool:
+  """Return a reservation's points to the account. No-op unless 'reserved'."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if not entry or entry.status != "reserved":
+    return False
+  await session.execute(
+    update(LoyaltyAccount)
+    .where(LoyaltyAccount.loyalty_id == str(loyalty_id))
+    .values(balance=LoyaltyAccount.balance + entry.points)
+  )
+  entry.status = "released"
+  return True
+
+
+async def commit_loyalty_reservation(
+  session: AsyncSession, entry_id: str
+) -> None:
+  """Mark a reservation as spent."""
+  entry = await session.get(LoyaltyLedger, entry_id)
+  if entry and entry.status == "reserved":
+    entry.status = "committed"
+
+
+async def credit_loyalty_points(
+  session: AsyncSession, loyalty_id: str, points: int, entry_id: str
+) -> bool:
+  """Add points once per entry_id. Returns False if already credited."""
+  if await session.get(LoyaltyLedger, entry_id):
+    return False
+  account = await session.get(LoyaltyAccount, str(loyalty_id))
+  if account:
+    account.balance += points
+  else:
+    session.add(LoyaltyAccount(loyalty_id=str(loyalty_id), balance=points))
+  session.add(
+    LoyaltyLedger(
+      entry_id=entry_id,
+      loyalty_id=str(loyalty_id),
+      kind="earn",
+      points=points,
+      status="credited",
+      created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    )
+  )
+  return True
