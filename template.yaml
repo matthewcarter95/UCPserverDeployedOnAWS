@@ -5,8 +5,8 @@ Description: UCP Merchant Server - Serverless FastAPI Application
 Parameters:
   Auth0Domain:
     Type: String
-    Default: universal-commerce-merchant.cic-demo-platform.auth0app.com
-    Description: Auth0 tenant that issues access tokens
+    Default: auth0connectedapps.demo-connect.us
+    Description: Auth0 custom domain that issues access tokens (the iss claim)
   AuthAudience:
     Type: String
     Default: api://ucp.session.service
@@ -17,11 +17,11 @@ Parameters:
     AllowedValues: [off, optional, enforce]
   AllowedClientIds:
     Type: CommaDelimitedList
-    Default: "C70smEFi7G1XQBO9KVeBN5adJWpfQeDo,JadSTY7yOSsK8DsjaMCqDPyRA63G3xxN"
+    Default: "PX3u5zLgnC39WzYFnGU6Aval5V9xabGd"
     Description: Auth0 client ids (azp) permitted to call this merchant
   LoyaltyClaim:
     Type: String
-    Default: https://demo.okta.com/loyaltyId
+    Default: loyaltyId
     Description: Access-token claim that carries the buyer's loyaltyId
 
 Globals:

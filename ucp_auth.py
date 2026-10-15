@@ -51,7 +51,9 @@ from jwt import PyJWKClient
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LOYALTY_CLAIM = "https://demo.okta.com/loyaltyId"
+# The AddClaimsToTokens Action in the myid-selfservice tenant sets this
+# un-namespaced claim from app_metadata.loyaltyId.
+DEFAULT_LOYALTY_CLAIM = "loyaltyId"
 
 # Scope names. The `mock.` prefix is used because Auth0 reserves `dev.ucp`.
 SCOPE_CHECKOUT_MANAGE = "mock.ucp.shopping.checkout:manage"
