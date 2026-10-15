@@ -21,6 +21,7 @@ from typing import Any
 
 import config
 import db
+import ucp_auth
 from exceptions import (
   ResourceNotFoundError,
   IdempotencyConflictError,
@@ -47,6 +48,8 @@ import json
 import hashlib
 
 logger = logging.getLogger(__name__)
+
+_OWNER_KEY = "_owner"
 
 
 class CartService:
@@ -88,16 +91,41 @@ class CartService:
     json_str = json.dumps(request_identity, sort_keys=True)
     return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
+  async def _load_cart(
+    self, cart_id: str, identity: ucp_auth.Identity | None
+  ) -> tuple[dict[str, Any], str | None]:
+    """Load a cart, hiding it (404) from anyone but its owner.
+
+    Carts made by an authenticated buyer are bound to that buyer's `sub`.
+    Carts made anonymously have no owner and stay open.
+    """
+    data = await db.get_cart_session(self.transactions_session, cart_id)
+    if not data:
+      raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+    data = dict(data)
+    owner = data.pop(_OWNER_KEY, None)
+    if owner is not None and (identity.sub if identity else None) != owner:
+      logger.warning("Cart %s requested by a non-owner", cart_id)
+      raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+    return data, owner
+
   async def create_cart(
     self,
     cart_req: CartCreateRequest,
     idempotency_key: str,
+    identity: ucp_auth.Identity | None = None,
   ) -> Cart:
     """Create a new cart session."""
     logger.info("Creating cart session")
 
     # Idempotency Check
-    request_hash = self._compute_hash("create_cart", cart_req)
+    request_hash = self._compute_hash(
+      "create_cart",
+      {
+        "request": cart_req.model_dump(mode="json"),
+        "buyer": identity.sub if identity else None,
+      },
+    )
     existing_record = await db.get_idempotency_record(
       self.transactions_session, idempotency_key
     )
@@ -178,7 +206,7 @@ class CartService:
     await db.save_cart(
       self.transactions_session,
       cart.id,
-      response_body,
+      {**response_body, _OWNER_KEY: identity.sub} if identity else response_body,
     )
 
     # Save Idempotency Record
@@ -193,11 +221,11 @@ class CartService:
     await self.transactions_session.commit()
     return cart
 
-  async def get_cart(self, cart_id: str) -> Cart:
+  async def get_cart(
+    self, cart_id: str, identity: ucp_auth.Identity | None = None
+  ) -> Cart:
     """Retrieve a cart session."""
-    data = await db.get_cart_session(self.transactions_session, cart_id)
-    if not data:
-      raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+    data, _ = await self._load_cart(cart_id, identity)
     return Cart(**data)
 
   async def update_cart(
@@ -205,13 +233,19 @@ class CartService:
     cart_id: str,
     cart_req: CartUpdateRequest,
     idempotency_key: str,
+    identity: ucp_auth.Identity | None = None,
   ) -> Cart:
     """Update a cart session."""
     logger.info("Updating cart session %s", cart_id)
 
     # Idempotency Check
     request_hash = self._compute_hash(
-      "update_cart", cart_req, resource_id=cart_id
+      "update_cart",
+      {
+        "request": cart_req.model_dump(mode="json"),
+        "buyer": identity.sub if identity else None,
+      },
+      resource_id=cart_id,
     )
     existing_record = await db.get_idempotency_record(
       self.transactions_session, idempotency_key
@@ -223,12 +257,8 @@ class CartService:
         )
       return Cart(**existing_record.response_body)
 
-    # Verify existence
-    existing_data = await db.get_cart_session(
-      self.transactions_session, cart_id
-    )
-    if not existing_data:
-      raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+    # Verify existence and ownership
+    existing_data, owner = await self._load_cart(cart_id, identity)
     existing = Cart(**existing_data)
 
     # Update line items
@@ -265,7 +295,7 @@ class CartService:
     await db.save_cart(
       self.transactions_session,
       cart_id,
-      response_body,
+      {**response_body, _OWNER_KEY: owner} if owner is not None else response_body,
     )
 
     # Save Idempotency Record
@@ -284,12 +314,17 @@ class CartService:
     self,
     cart_id: str,
     idempotency_key: str,
+    identity: ucp_auth.Identity | None = None,
   ) -> Cart:
     """Cancel a cart session."""
     logger.info("Canceling cart session %s", cart_id)
 
     # Idempotency Check
-    request_hash = self._compute_hash("cancel_cart", {}, resource_id=cart_id)
+    request_hash = self._compute_hash(
+      "cancel_cart",
+      {"buyer": identity.sub if identity else None},
+      resource_id=cart_id,
+    )
     existing_record = await db.get_idempotency_record(
       self.transactions_session, idempotency_key
     )
@@ -300,12 +335,8 @@ class CartService:
         )
       return Cart(**existing_record.response_body)
 
-    # Verify existence
-    existing_data = await db.get_cart_session(
-      self.transactions_session, cart_id
-    )
-    if not existing_data:
-      raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+    # Verify existence and ownership
+    existing_data, _ = await self._load_cart(cart_id, identity)
     cart = Cart(**existing_data)
 
     # Delete cart

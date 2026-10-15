@@ -21,7 +21,7 @@ Parameters:
     Description: Auth0 client ids (azp) permitted to call this merchant
   LoyaltyClaim:
     Type: String
-    Default: loyaltyId
+    Default: https://demo.okta/loyaltyId
     Description: Access-token claim that carries the buyer's loyaltyId
 
 Globals:

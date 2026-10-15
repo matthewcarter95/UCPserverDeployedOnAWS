@@ -38,6 +38,7 @@ import logging
 from typing import Any
 import uuid
 
+import buyer_profile
 import config
 import db
 import loyalty
@@ -112,6 +113,11 @@ from ucp_sdk.models.schemas.common.types.total import (
 
 logger = logging.getLogger(__name__)
 
+# Passed by internal callers (webhooks, shipping) that act for the merchant,
+# not for a buyer, so they skip the ownership check.
+_INTERNAL = object()
+_OWNER_KEY = "_owner"
+
 
 def _destination_fields(dest_req: Any) -> dict[str, Any]:
   """Return a request destination as a plain dict.
@@ -156,6 +162,7 @@ class CheckoutService:
     self.products_session = products_session
     self.transactions_session = transactions_session
     self.base_url = base_url.rstrip("/")
+    self._owners: dict[str, str | None] = {}
 
   def _compute_hash(
     self,
@@ -183,12 +190,21 @@ class CheckoutService:
     checkout_req: UnifiedCheckoutCreateRequest,
     idempotency_key: str,
     platform_config: PlatformSchema | None = None,
+    identity: ucp_auth.Identity | None = None,
   ) -> Checkout:
     """Create a new checkout session."""
     logger.info("Creating checkout session")
 
-    # Idempotency Check
-    request_hash = self._compute_hash("create_checkout", checkout_req)
+    # Idempotency Check. The response can carry the buyer's stored profile, so
+    # a replay is bound to the buyer: another buyer reusing the key must not
+    # receive this buyer's cached response.
+    request_hash = self._compute_hash(
+      "create_checkout",
+      {
+        "request": checkout_req.model_dump(mode="json"),
+        "buyer": identity.sub if identity else None,
+      },
+    )
     existing_record = await db.get_idempotency_record(
       self.transactions_session, idempotency_key
     )
@@ -203,11 +219,17 @@ class CheckoutService:
     cart_id = getattr(checkout_req, "cart_id", None)
 
     if cart_id:
-      # Check if incomplete checkout already exists for this cart_id
+      caller = identity.sub if identity else None
+      # Check if an incomplete checkout already exists for this cart_id that
+      # belongs to this caller. Someone else's is never returned.
       existing_checkouts = await db.get_checkouts_by_cart_id(
         self.transactions_session, cart_id
       )
       for data in existing_checkouts:
+        data = dict(data)
+        owner = data.pop(_OWNER_KEY, None)
+        if owner is not None and owner != caller:
+          continue
         if data.get("status") not in [
           CheckoutStatus.COMPLETED,
           CheckoutStatus.CANCELED,
@@ -215,11 +237,16 @@ class CheckoutService:
           logger.info(
             "Returning existing incomplete checkout for cart %s", cart_id
           )
+          self._owners[data["id"]] = owner
           return Checkout(**data)
 
-      # Load cart to initialize checkout
+      # Load cart to initialize checkout (hidden from non-owners)
       cart_data = await db.get_cart_session(self.transactions_session, cart_id)
       if not cart_data:
+        raise ResourceNotFoundError(f"Cart session {cart_id} not found")
+      cart_data = dict(cart_data)
+      cart_owner = cart_data.pop("_owner", None)
+      if cart_owner is not None and cart_owner != caller:
         raise ResourceNotFoundError(f"Cart session {cart_id} not found")
 
       from models import UnifiedCart as CartModel
@@ -389,6 +416,11 @@ class CheckoutService:
 
       fulfillment_resp = FulfillmentResponseClass(methods=resp_methods)
 
+    # Offer the buyer's saved address (from the token) as a destination.
+    fulfillment_resp = self._offer_saved_address(
+      fulfillment_resp, identity, line_items
+    )
+
     # The SDK enforces the totals contains cardinality (exactly one subtotal
     # and one total) on the response model. The server is the authority for
     # totals and computes them in _recalculate_totals below, but that runs
@@ -430,9 +462,7 @@ class CheckoutService:
       else None,
       platform=platform_config,
       fulfillment=fulfillment_resp,
-      buyer=source_buyer.model_dump(exclude_none=True)
-      if source_buyer
-      else None,
+      buyer=self._merge_buyer(source_buyer, identity),
       context=source_context.model_dump(exclude_none=True)
       if source_context
       else None,
@@ -452,14 +482,14 @@ class CheckoutService:
     await self._validate_inventory(checkout)
 
     checkout.status = CheckoutStatus.READY_FOR_COMPLETE
+    self._owners[checkout.id] = identity.sub if identity else None
 
     response_body = checkout.model_dump(
       mode="json", by_alias=True, exclude_none=True
     )
 
     # Persist checkout to Transactions DB
-    await db.save_checkout(
-      self.transactions_session,
+    await self._save_checkout(
       checkout.id,
       checkout.status,
       response_body,
@@ -481,6 +511,7 @@ class CheckoutService:
   async def get_checkout(
     self,
     checkout_id: str,
+    identity: ucp_auth.Identity | None = None,
   ) -> Checkout:
     """Retrieve a checkout session."""
     # Log the request
@@ -492,7 +523,7 @@ class CheckoutService:
     )
     await self.transactions_session.commit()
 
-    return await self._get_and_validate_checkout(checkout_id)
+    return await self._get_and_validate_checkout(checkout_id, identity)
 
   async def update_checkout(
     self,
@@ -500,13 +531,19 @@ class CheckoutService:
     checkout_req: UnifiedCheckoutUpdateRequest,
     idempotency_key: str,
     platform_config: PlatformSchema | None = None,
+    identity: ucp_auth.Identity | None = None,
   ) -> Checkout:
     """Update a checkout session."""
     logger.info("Updating checkout session %s", checkout_id)
 
-    # Idempotency Check
+    # Idempotency Check (bound to the buyer, as in create_checkout)
     request_hash = self._compute_hash(
-      "update_checkout", checkout_req, resource_id=checkout_id
+      "update_checkout",
+      {
+        "request": checkout_req.model_dump(mode="json"),
+        "buyer": identity.sub if identity else None,
+      },
+      resource_id=checkout_id
     )
 
     existing_record = await db.get_idempotency_record(
@@ -529,7 +566,7 @@ class CheckoutService:
       payload=payload_dict,
     )
 
-    existing = await self._get_and_validate_checkout(checkout_id)
+    existing = await self._get_and_validate_checkout(checkout_id, identity)
     self._ensure_modifiable(existing, "update")
 
     # Update existing with request data
@@ -588,6 +625,11 @@ class CheckoutService:
         customer_addresses = await db.get_customer_addresses(
           self.transactions_session, existing.buyer.email
         )
+
+      saved_address = buyer_profile.address_from(identity)
+      saved_destination = (
+        _shipping_destination(saved_address) if saved_address else None
+      )
 
       req_fulfillment = checkout_req.fulfillment
       resp_methods = []
@@ -652,7 +694,9 @@ class CheckoutService:
             elif existing_method and existing_method.destinations:
               # Preserve existing destinations
               resp_destinations = existing_method.destinations
-            elif customer_addresses:
+            elif saved_destination or customer_addresses:
+              if saved_destination:
+                resp_destinations.append(saved_destination)
               for addr in customer_addresses:
                 resp_destinations.append(
                   _shipping_destination({
@@ -715,8 +759,7 @@ class CheckoutService:
       mode="json", by_alias=True, exclude_none=True
     )
 
-    await db.save_checkout(
-      self.transactions_session,
+    await self._save_checkout(
       checkout_id,
       existing.status,
       response_body,
@@ -781,7 +824,7 @@ class CheckoutService:
       payload=combined_data,
     )
 
-    checkout = await self._get_and_validate_checkout(checkout_id)
+    checkout = await self._get_and_validate_checkout(checkout_id, identity)
     self._ensure_modifiable(checkout, "complete")
 
     # Process Payment (one or more instruments; points are reserved first)
@@ -932,8 +975,7 @@ class CheckoutService:
         order.model_dump(mode="json", by_alias=True, exclude_none=True),
       )
 
-      await db.save_checkout(
-        self.transactions_session,
+      await self._save_checkout(
         checkout_id,
         checkout.status,
         response_body,
@@ -1141,6 +1183,7 @@ class CheckoutService:
     self,
     checkout_id: str,
     idempotency_key: str,
+    identity: ucp_auth.Identity | None = None,
   ) -> Checkout:
     """Cancel a checkout session."""
     logger.info("Canceling checkout session %s", checkout_id)
@@ -1148,7 +1191,9 @@ class CheckoutService:
     # Idempotency Check
     # Payload is empty for cancel usually.
     request_hash = self._compute_hash(
-      "cancel_checkout", {}, resource_id=checkout_id
+      "cancel_checkout",
+      {"buyer": identity.sub if identity else None},
+      resource_id=checkout_id,
     )
 
     existing_record = await db.get_idempotency_record(
@@ -1169,7 +1214,7 @@ class CheckoutService:
       checkout_id=checkout_id,
     )
 
-    checkout = await self._get_and_validate_checkout(checkout_id)
+    checkout = await self._get_and_validate_checkout(checkout_id, identity)
     self._ensure_modifiable(checkout, "cancel")
 
     checkout.status = CheckoutStatus.CANCELED
@@ -1177,8 +1222,7 @@ class CheckoutService:
       mode="json", by_alias=True, exclude_none=True
     )
 
-    await db.save_checkout(
-      self.transactions_session,
+    await self._save_checkout(
       checkout_id,
       checkout.status,
       response_body,
@@ -1224,12 +1268,38 @@ class CheckoutService:
     await self.transactions_session.commit()
     return order
 
-  async def _get_and_validate_checkout(self, checkout_id: str) -> Checkout:
-    """Retrieve a checkout session and validates its existence."""
+  async def _get_and_validate_checkout(
+    self, checkout_id: str, identity: Any = _INTERNAL
+  ) -> Checkout:
+    """Load a checkout, enforcing that the caller owns it.
+
+    A checkout created by an authenticated buyer is bound to that buyer's
+    `sub` and is invisible (404, not 403, so existence is not revealed) to
+    anyone else. Checkouts created anonymously have no owner and stay open.
+    Pass no `identity` only from merchant-internal code.
+    """
     data = await db.get_checkout_session(self.transactions_session, checkout_id)
     if not data:
       raise ResourceNotFoundError("Checkout session not found")
+    data = dict(data)
+    owner = data.pop(_OWNER_KEY, None)
+    if identity is not _INTERNAL and owner is not None:
+      caller = identity.sub if identity is not None else None
+      if caller != owner:
+        logger.warning("Checkout %s requested by a non-owner", checkout_id)
+        raise ResourceNotFoundError("Checkout session not found")
+    self._owners[checkout_id] = owner
     return Checkout(**data)
+
+  async def _save_checkout(
+    self, checkout_id: str, status: Any, body: dict[str, Any]
+  ) -> None:
+    """Persist a checkout together with its owner (kept out of responses)."""
+    owner = self._owners.get(checkout_id)
+    stored = {**body, _OWNER_KEY: owner} if owner is not None else body
+    await db.save_checkout(
+      self.transactions_session, checkout_id, status, stored
+    )
 
   def _ensure_modifiable(self, checkout: Checkout, action: str) -> None:
     """Ensure that the checkout is in a state that allows modification."""
@@ -1442,6 +1512,64 @@ class CheckoutService:
             )
 
     checkout.totals.append(TotalResponse(type="total", amount=grand_total))
+
+  def _merge_buyer(
+    self, source_buyer: Any, identity: ucp_auth.Identity | None
+  ) -> dict[str, Any] | None:
+    """Combine the buyer the platform sent with the stored profile.
+
+    Whatever the platform supplied wins; the token's profile fills the gaps.
+    """
+    supplied = source_buyer.model_dump(exclude_none=True) if source_buyer else {}
+    stored = buyer_profile.buyer_from(identity) or {}
+    return {**stored, **supplied} or None
+
+  def _offer_saved_address(
+    self,
+    fulfillment: Any,
+    identity: ucp_auth.Identity | None,
+    line_items: list[Any],
+  ) -> Any:
+    """Add the buyer's saved address as a shipping destination.
+
+    The address is only offered: nothing is selected, so the platform still
+    chooses (or replaces it) and the buyer confirms before anything ships.
+    """
+    address = buyer_profile.address_from(identity)
+    if not address:
+      return fulfillment
+    destination = _shipping_destination(address)
+    if fulfillment and fulfillment.methods:
+      for method in fulfillment.methods:
+        if method.type == "shipping" and not method.destinations:
+          method.destinations = [destination]
+          return fulfillment
+      return fulfillment
+    return FulfillmentResponseClass(
+      methods=[
+        FulfillmentMethod(
+          id=str(uuid.uuid4()),
+          type="shipping",
+          line_item_ids=[li.id for li in line_items],
+          destinations=[destination],
+        )
+      ]
+    )
+
+  async def points_instrument(
+    self, identity: ucp_auth.Identity | None, checkout: Checkout
+  ) -> dict[str, Any] | None:
+    """The buyer's spendable loyalty points as a saved payment instrument."""
+    if identity is None or not identity.loyalty_id:
+      return None
+    if checkout.status in (CheckoutStatus.COMPLETED, CheckoutStatus.CANCELED):
+      return None
+    balance = await db.get_loyalty_balance(
+      self.transactions_session, identity.loyalty_id
+    )
+    return loyalty.spendable_instrument(
+      identity.sub, balance or 0, self._order_total(checkout)
+    )
 
   def _order_total(self, checkout: Checkout) -> int:
     """Return the checkout's grand total in minor units."""

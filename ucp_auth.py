@@ -33,6 +33,7 @@ Configuration (environment variables, so it works locally and in Lambda):
   AUTH0_DOMAIN      Tenant domain; the issuer is https://<domain>/.
   AUTH_AUDIENCE     Resource server identifier expected in `aud`.
   LOYALTY_CLAIM     Access-token claim carrying the buyer's loyaltyId.
+  CLAIM_NAMESPACE   Prefix of the name / email / shippingAddress claims.
   AUTH_ALLOWED_CLIENT_IDS  Optional comma-separated `azp`/`client_id` allowlist.
 """
 
@@ -51,9 +52,11 @@ from jwt import PyJWKClient
 
 logger = logging.getLogger(__name__)
 
-# The AddClaimsToTokens Action in the myid-selfservice tenant sets this
-# un-namespaced claim from app_metadata.loyaltyId.
-DEFAULT_LOYALTY_CLAIM = "loyaltyId"
+# The AddClaimsToTokens post-login Action in the myid-selfservice tenant adds
+# these namespaced claims to access tokens. loyaltyId is added for every
+# client; name, email and shippingAddress only for the shopping-agent SPA.
+DEFAULT_CLAIM_NAMESPACE = "https://demo.okta"
+DEFAULT_LOYALTY_CLAIM = f"{DEFAULT_CLAIM_NAMESPACE}/loyaltyId"
 
 # Scope names. The `mock.` prefix is used because Auth0 reserves `dev.ucp`.
 SCOPE_CHECKOUT_MANAGE = "mock.ucp.shopping.checkout:manage"
@@ -95,6 +98,11 @@ class Identity:
   scopes: frozenset[str]
   client_id: str | None = None
   loyalty_id: str | None = None
+  name: str | None = None
+  email: str | None = None
+  # The buyer's saved shipping address as stored in Auth0 user_metadata, e.g.
+  # {id, label, street, city, state, zip, country}. Shape is not validated here.
+  shipping_address: dict[str, Any] | None = None
   claims: dict[str, Any] = field(default_factory=dict, repr=False)
 
   def has_scope(self, scope: str) -> bool:
@@ -120,6 +128,11 @@ def issuer() -> str:
 def audience() -> str:
   """Return the expected token audience."""
   return os.environ.get("AUTH_AUDIENCE", "")
+
+
+def claim_namespace() -> str:
+  """Return the prefix of the profile claims."""
+  return os.environ.get("CLAIM_NAMESPACE", DEFAULT_CLAIM_NAMESPACE).rstrip("/")
 
 
 def loyalty_claim() -> str:
@@ -199,17 +212,27 @@ def _decode(token: str) -> dict[str, Any]:
   )
 
 
+def _text(value: Any) -> str | None:
+  """Return a stripped non-empty string, else None."""
+  return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _identity_from_claims(claims: dict[str, Any]) -> Identity:
   raw_scope = claims.get("scope", "")
   scopes = frozenset(
     raw_scope.split() if isinstance(raw_scope, str) else list(raw_scope)
   )
   raw_loyalty = claims.get(loyalty_claim())
+  ns = claim_namespace()
+  address = claims.get(f"{ns}/shippingAddress")
   return Identity(
     sub=str(claims["sub"]),
     scopes=scopes,
     client_id=claims.get("azp") or claims.get("client_id"),
     loyalty_id=str(raw_loyalty) if raw_loyalty not in (None, "") else None,
+    name=_text(claims.get(f"{ns}/name")),
+    email=_text(claims.get(f"{ns}/email")),
+    shipping_address=address if isinstance(address, dict) and address else None,
     claims=claims,
   )
 

@@ -40,6 +40,7 @@ from models import (
 from pydantic import BaseModel
 from pydantic import HttpUrl
 from pydantic import TypeAdapter
+from ucp_sdk.models.schemas.common.types.payment import Payment as PaymentResponse
 from ucp_sdk.models.schemas.common.loyalty import Loyalty as LoyaltyMap
 from services.cart_service import CartService
 from services.checkout_service import CheckoutService
@@ -147,6 +148,24 @@ async def extract_webhook_url(ucp_agent: str) -> str | None:
 _LOYALTY_ADAPTER = TypeAdapter(LoyaltyMap)
 
 
+async def _decorate_checkout(
+  checkout: Any,
+  identity: ucp_auth.Identity | None,
+  checkout_service: CheckoutService,
+) -> Any:
+  """Attach loyalty membership and the spendable points instrument."""
+  checkout = _decorate_loyalty(checkout, identity)
+  instrument = await checkout_service.points_instrument(identity, checkout)
+  if instrument:
+    existing = [
+      i
+      for i in (checkout.payment.instruments if checkout.payment else None) or []
+      if getattr(i, "handler_id", None) != loyalty.HANDLER_ID
+    ]
+    checkout.payment = PaymentResponse(instruments=[*existing, instrument])
+  return checkout
+
+
 def _decorate_loyalty(resource: Any, identity: ucp_auth.Identity | None) -> Any:
   """Attach the buyer's loyalty membership to a response (not persisted)."""
   if identity is None or not identity.loyalty_id:
@@ -186,9 +205,9 @@ async def create_checkout(
     platform_config = PlatformSchema(webhook_url=webhook_url)
 
   result = await checkout_service.create_checkout(
-    unified_req, idempotency_key, platform_config
+    unified_req, idempotency_key, platform_config, identity=identity
   )
-  return _decorate_loyalty(result, identity)
+  return await _decorate_checkout(result, identity, checkout_service)
 
 
 async def get_checkout(
@@ -205,8 +224,8 @@ async def get_checkout(
 ) -> models.UnifiedCheckout:
   """Get Checkout Implementation."""
   del common_headers  # Unused
-  result = await checkout_service.get_checkout(checkout_id)
-  return _decorate_loyalty(result, identity)
+  result = await checkout_service.get_checkout(checkout_id, identity)
+  return await _decorate_checkout(result, identity, checkout_service)
 
 
 async def update_checkout(
@@ -233,9 +252,9 @@ async def update_checkout(
     platform_config = PlatformSchema(webhook_url=webhook_url)
 
   result = await checkout_service.update_checkout(
-    checkout_id, unified_req, idempotency_key, platform_config
+    checkout_id, unified_req, idempotency_key, platform_config, identity=identity
   )
-  return _decorate_loyalty(result, identity)
+  return await _decorate_checkout(result, identity, checkout_service)
 
 
 async def complete_checkout(
@@ -284,7 +303,9 @@ async def cancel_checkout(
   ],
 ) -> models.UnifiedCheckout:
   """Cancel Checkout Implementation."""
-  return await checkout_service.cancel_checkout(checkout_id, idempotency_key)
+  return await checkout_service.cancel_checkout(
+    checkout_id, idempotency_key, identity=identity
+  )
 
 
 async def create_cart(
@@ -303,7 +324,9 @@ async def create_cart(
 ) -> models.UnifiedCart:
   """Create Cart Implementation."""
   del common_headers  # Unused
-  result = await cart_service.create_cart(cart_req, idempotency_key)
+  result = await cart_service.create_cart(
+    cart_req, idempotency_key, identity=identity
+  )
   return _decorate_loyalty(result, identity)
 
 
@@ -319,7 +342,9 @@ async def get_cart(
 ) -> models.UnifiedCart:
   """Get Cart Implementation."""
   del common_headers  # Unused
-  return _decorate_loyalty(await cart_service.get_cart(cart_id), identity)
+  return _decorate_loyalty(
+    await cart_service.get_cart(cart_id, identity), identity
+  )
 
 
 async def update_cart(
@@ -340,7 +365,10 @@ async def update_cart(
   """Update Cart Implementation."""
   del common_headers  # Unused
   return _decorate_loyalty(
-    await cart_service.update_cart(cart_id, cart_req, idempotency_key), identity
+    await cart_service.update_cart(
+      cart_id, cart_req, idempotency_key, identity=identity
+    ),
+    identity,
   )
 
 
@@ -357,7 +385,9 @@ async def cancel_cart(
 ) -> models.UnifiedCart:
   """Cancel Cart Implementation."""
   del common_headers  # Unused
-  return await cart_service.cancel_cart(cart_id, idempotency_key)
+  return await cart_service.cancel_cart(
+    cart_id, idempotency_key, identity=identity
+  )
 
 
 async def order_event_webhook(

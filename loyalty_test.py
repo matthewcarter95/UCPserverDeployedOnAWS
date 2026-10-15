@@ -33,9 +33,20 @@ import ucp_auth
 
 ISSUER_DOMAIN = "test-tenant.example.com"
 AUDIENCE = "api://ucp.session.service"
-CLAIM = "https://demo.okta.com/loyaltyId"
+NS = "https://demo.okta"
+CLAIM = f"{NS}/loyaltyId"
 LOYALTY_ID = "4015782993"
 START_POINTS = 3000
+
+SAVED_ADDRESS = {
+  "id": "9c708820-f889-47c2-9ce5-299d7ef6212a",
+  "label": "Home",
+  "street": "25 Beacon St",
+  "city": "Boston",
+  "state": "Massachusetts",
+  "zip": "02116",
+  "country": "US",
+}
 
 MANAGE = ucp_auth.SCOPE_CHECKOUT_MANAGE
 COMPLETE = ucp_auth.SCOPE_CHECKOUT_COMPLETE
@@ -61,6 +72,7 @@ class LoyaltyTest(it.IntegrationTest):
         "AUTH_AUDIENCE": AUDIENCE,
         "AUTH_MODE": "optional",
         "LOYALTY_CLAIM": CLAIM,
+        "CLAIM_NAMESPACE": NS,
         "LOYALTY_CENTS_PER_POINT": "1",
         "LOYALTY_EARN_PER_DOLLAR": "1",
         "LOYALTY_MAX_REDEEM_PERCENT": "50",
@@ -86,6 +98,20 @@ class LoyaltyTest(it.IntegrationTest):
       )
       await session.commit()
 
+  async def _seed_shipping_rate(self) -> None:
+    """Only the tests that price shipping add this; others expect none."""
+    async with self.transactions_session_factory() as session:
+      session.add(
+        db.ShippingRate(
+          id="std-ship",
+          country_code="default",
+          service_level="standard",
+          price=500,
+          title="Standard Shipping",
+        )
+      )
+      await session.commit()
+
   def _balance(self) -> int:
     async def read() -> int | None:
       async with self.transactions_session_factory() as session:
@@ -104,6 +130,7 @@ class LoyaltyTest(it.IntegrationTest):
     self,
     scopes: tuple[str, ...] = (MANAGE, COMPLETE),
     loyalty_id: str | None = LOYALTY_ID,
+    profile: bool = False,
     **overrides,
   ) -> str:
     now = int(time.time())
@@ -118,6 +145,10 @@ class LoyaltyTest(it.IntegrationTest):
     }
     if loyalty_id is not None:
       claims[CLAIM] = loyalty_id
+    if profile:
+      claims[f"{NS}/name"] = "Pat Q Buyer"
+      claims[f"{NS}/email"] = "pat@example.com"
+      claims[f"{NS}/shippingAddress"] = dict(SAVED_ADDRESS)
     claims.update(overrides)
     return jwt.encode(claims, self.key, algorithm="RS256")
 
@@ -329,6 +360,306 @@ class LoyaltyTest(it.IntegrationTest):
     self.assertEqual(allowed.status_code, 201, allowed.text)
     self.assertEqual(blocked.status_code, 401)
 
+  # ----- stored buyer profile + spendable points -------------------------
+
+  def _create_plain(self, key, token, **body):
+    return self.client.post(
+      "/checkout-sessions",
+      headers=self._headers(key, token),
+      json={"line_items": [{"item": {"id": "rose"}, "quantity": 2}], **body},
+    )
+
+  def test_profile_is_populated_from_the_token(self) -> None:
+    with self.client:
+      response = self._create_plain("pr1", self._token(profile=True))
+    self.assertEqual(response.status_code, 201, response.text)
+    body = response.json()
+    self.assertEqual(
+      body["buyer"],
+      {"first_name": "Pat Q", "last_name": "Buyer", "email": "pat@example.com"},
+    )
+    methods = body["fulfillment"]["methods"]
+    self.assertEqual(len(methods), 1)
+    destination = methods[0]["destinations"][0]
+    self.assertEqual(destination["type"], "shipping_address")
+    self.assertEqual(destination["street_address"], "25 Beacon St")
+    self.assertEqual(destination["address_locality"], "Boston")
+    self.assertEqual(destination["address_region"], "Massachusetts")
+    self.assertEqual(destination["postal_code"], "02116")
+    self.assertEqual(destination["address_country"], "US")
+    self.assertTrue(destination["id"].startswith("saved_"))
+    # Offered, never selected for the buyer.
+    self.assertIsNone(methods[0].get("selected_destination_id"))
+
+  def test_platform_supplied_buyer_overrides_stored(self) -> None:
+    with self.client:
+      response = self._create_plain(
+        "pr2",
+        self._token(profile=True),
+        buyer={"email": "other@example.com"},
+      )
+    buyer = response.json()["buyer"]
+    self.assertEqual(buyer["email"], "other@example.com")
+    self.assertEqual(buyer["first_name"], "Pat Q")
+
+  def test_no_profile_without_claims_or_token(self) -> None:
+    with self.client:
+      no_claims = self._create_plain("pr3", self._token())
+      anonymous = self._create_plain("pr4", None)
+    for response in (no_claims, anonymous):
+      self.assertEqual(response.status_code, 201, response.text)
+      self.assertNotIn("buyer", response.json())
+      self.assertNotIn("fulfillment", response.json())
+
+  def test_incomplete_saved_address_is_not_offered(self) -> None:
+    token = self._token(profile=True)
+    claims = jwt.decode(token, options={"verify_signature": False})
+    claims[f"{NS}/shippingAddress"] = {"label": "Home", "city": "Boston"}
+    bad = jwt.encode(claims, self.key, algorithm="RS256")
+    with self.client:
+      response = self._create_plain("pr5", bad)
+    self.assertNotIn("fulfillment", response.json())
+
+  def test_saved_address_is_selectable_through_checkout(self) -> None:
+    asyncio.run(self._seed_shipping_rate())
+    token = self._token(profile=True)
+    with self.client:
+      created = self._create_plain("pr6", token).json()
+      checkout_id = self.get_resource_id(created["id"])
+      line_id = created["line_items"][0]["id"]
+      method = created["fulfillment"]["methods"][0]
+      saved_id = method["destinations"][0]["id"]
+      line_items = [{"id": line_id, "item": {"id": "rose"}, "quantity": 2}]
+      with_options = self.client.put(
+        f"/checkout-sessions/{checkout_id}",
+        headers=self._headers("pr7", token),
+        json={
+          "id": checkout_id,
+          "line_items": line_items,
+          "fulfillment": {
+            "methods": [
+              {
+                "id": method["id"],
+                "type": "shipping",
+                "line_item_ids": [line_id],
+                "selected_destination_id": saved_id,
+                "groups": [{"id": "g", "line_item_ids": [line_id]}],
+              }
+            ]
+          },
+        },
+      )
+    self.assertEqual(with_options.status_code, 200, with_options.text)
+    method_back = with_options.json()["fulfillment"]["methods"][0]
+    self.assertEqual(
+      method_back["selected_destination_id"], saved_id
+    )
+    group = method_back["groups"][0]
+    self.assertTrue(group["options"], "options are priced for the saved address")
+
+  def test_points_offered_as_a_saved_instrument(self) -> None:
+    with self.client:
+      response = self._create_plain("pt1", self._token())  # $20.00
+    instruments = response.json()["payment"]["instruments"]
+    self.assertEqual(len(instruments), 1)
+    points = instruments[0]
+    self.assertEqual(points["handler_id"], loyalty.HANDLER_ID)
+    self.assertEqual(points["type"], "loyalty")
+    display = points["display"]
+    self.assertEqual(display["balance_points"], START_POINTS)
+    self.assertEqual(display["max_redeemable_cents"], 1000)  # 50% of $20
+    self.assertEqual(display["max_redeemable_points"], 1000)
+    self.assertNotIn("credential", points)
+
+  def test_offered_points_instrument_can_be_spent(self) -> None:
+    """Saved address + offered points, end to end, with nothing typed in."""
+    asyncio.run(self._seed_shipping_rate())
+    token = self._token(profile=True)
+    with self.client:
+      created = self._create_plain("pt2", token).json()
+      checkout_id = self.get_resource_id(created["id"])
+      line_id = created["line_items"][0]["id"]
+      method = created["fulfillment"]["methods"][0]
+      saved_id = method["destinations"][0]["id"]
+      offered = created["payment"]["instruments"][0]
+      line_items = [{"id": line_id, "item": {"id": "rose"}, "quantity": 2}]
+
+      def put(key, group):
+        return self.client.put(
+          f"/checkout-sessions/{checkout_id}",
+          headers=self._headers(key, token),
+          json={
+            "id": checkout_id,
+            "line_items": line_items,
+            "fulfillment": {
+              "methods": [
+                {
+                  "id": method["id"],
+                  "type": "shipping",
+                  "line_item_ids": [line_id],
+                  "selected_destination_id": saved_id,
+                  "groups": [group],
+                }
+              ]
+            },
+          },
+        )
+
+      priced = put("pt2a", {"id": "g", "line_item_ids": [line_id]}).json()
+      group = priced["fulfillment"]["methods"][0]["groups"][0]
+      chosen = put(
+        "pt2b",
+        {
+          "id": group["id"],
+          "line_item_ids": [line_id],
+          "selected_option_id": group["options"][0]["id"],
+        },
+      )
+      self.assertEqual(chosen.status_code, 200, chosen.text)
+      # Totals now include shipping; the points offer tracks the new total.
+      offered = chosen.json()["payment"]["instruments"][0]
+      cap = offered["display"]["max_redeemable_cents"]
+      total = [
+        t["amount"] for t in chosen.json()["totals"] if t["type"] == "total"
+      ][0]
+      self.assertEqual(cap, total // 2)
+      spend = {
+        "id": offered["id"],
+        "handler_id": offered["handler_id"],
+        "type": offered["type"],
+        "credential": {"type": "loyalty", "token": "n/a"},
+      }  # open amount: the merchant decides, up to the cap
+      response = self._complete(
+        checkout_id, "pt3", token, [spend, self._card()]
+      )
+    self.assertEqual(response.status_code, 200, response.text)
+    self.assertEqual(self._balance(), START_POINTS - cap + (total - cap) // 100)
+
+  def test_no_points_offer_when_nothing_to_spend(self) -> None:
+    asyncio.run(self._set_balance(0))
+    with self.client:
+      empty = self._create_plain("pt4", self._token())
+      stranger = self._create_plain("pt5", self._token(loyalty_id="1111111111"))
+    self.assertNotIn("payment", empty.json())
+    self.assertNotIn("payment", stranger.json())
+
+  def test_get_reflects_current_balance_and_buyer_only(self) -> None:
+    token = self._token()
+    with self.client:
+      created = self._create_plain("pt6", token)
+      checkout_id = self.get_resource_id(created.json()["id"])
+      asyncio.run(self._set_balance(400))
+      mine = self.client.get(
+        f"/checkout-sessions/{checkout_id}", headers=self._headers("pt7", token)
+      )
+      anonymous = self.client.get(
+        f"/checkout-sessions/{checkout_id}", headers=self._headers("pt8")
+      )
+    self.assertEqual(
+      mine.json()["payment"]["instruments"][0]["display"]["balance_points"], 400
+    )
+    self.assertNotIn("payment", anonymous.json())
+    self.assertNotIn("loyalty", anonymous.json())
+
+  def test_idempotent_replay_does_not_leak_profile_to_another_buyer(self) -> None:
+    with self.client:
+      mine = self._create_plain("pl1", self._token(profile=True))
+      other = self._create_plain(
+        "pl1", self._token(profile=True, sub="auth0|someone-else")
+      )
+    self.assertEqual(mine.status_code, 201, mine.text)
+    self.assertEqual(other.status_code, 409)
+
+  # ----- ownership --------------------------------------------------------
+
+  def _other(self, **kw) -> str:
+    return self._token(sub="auth0|someone-else", loyalty_id="1111111111", **kw)
+
+  def test_checkout_is_invisible_to_other_buyers(self) -> None:
+    mine = self._token(profile=True)
+    with self.client:
+      created = self._create_plain("ow1", mine).json()
+      cid = self.get_resource_id(created["id"])
+      url = f"/checkout-sessions/{cid}"
+      owner = self.client.get(url, headers=self._headers("ow2", mine))
+      other_get = self.client.get(url, headers=self._headers("ow3", self._other()))
+      anonymous = self.client.get(url, headers=self._headers("ow4"))
+      other_complete = self._complete(cid, "ow5", self._other(), [self._card()])
+      other_cancel = self.client.post(
+        f"{url}/cancel", headers=self._headers("ow6", self._other())
+      )
+      still_there = self.client.get(url, headers=self._headers("ow7", mine))
+    self.assertEqual(owner.status_code, 200)
+    for denied in (other_get, anonymous, other_complete, other_cancel):
+      self.assertEqual(denied.status_code, 404, denied.text)
+      self.assertNotIn("pat@example.com", denied.text)
+    self.assertEqual(still_there.status_code, 200)
+    self.assertEqual(still_there.json()["status"], created["status"])
+
+  def test_owner_field_never_appears_in_responses(self) -> None:
+    mine = self._token(profile=True)
+    with self.client:
+      created = self._create_plain("ow8", mine)
+      cid = self.get_resource_id(created.json()["id"])
+      fetched = self.client.get(
+        f"/checkout-sessions/{cid}", headers=self._headers("ow9", mine)
+      )
+    for response in (created, fetched):
+      self.assertNotIn("_owner", response.text)
+      self.assertNotIn("auth0|buyer1", response.text)
+
+  def test_owner_survives_update_and_complete(self) -> None:
+    mine = self._token()
+    with self.client:
+      checkout_id, _ = self._new_checkout("ow10", mine)
+      done = self._complete(checkout_id, "ow11", mine, [self._card()])
+      replay_other = self._complete(checkout_id, "ow12", self._other(), [self._card()])
+    self.assertEqual(done.status_code, 200, done.text)
+    self.assertEqual(replay_other.status_code, 404)
+
+  def test_anonymous_checkout_stays_open(self) -> None:
+    with self.client:
+      created = self._create_plain("ow13", None)
+      cid = self.get_resource_id(created.json()["id"])
+      anyone = self.client.get(
+        f"/checkout-sessions/{cid}", headers=self._headers("ow14", self._other())
+      )
+    self.assertEqual(anyone.status_code, 200)
+
+  def test_cart_is_invisible_to_other_buyers_and_cannot_be_hijacked(self) -> None:
+    mine = self._token()
+    body = {"line_items": [{"item": {"id": "rose"}, "quantity": 1}]}
+    with self.client:
+      cart = self.client.post("/carts", headers=self._headers("cw1", mine), json=body)
+      self.assertEqual(cart.status_code, 201, cart.text)
+      cart_id = cart.json()["id"]
+      owner = self.client.get(f"/carts/{cart_id}", headers=self._headers("cw2", mine))
+      other = self.client.get(f"/carts/{cart_id}", headers=self._headers("cw3", self._other()))
+      other_update = self.client.put(
+        f"/carts/{cart_id}", headers=self._headers("cw4", self._other()),
+        json={"id": cart_id, "line_items": [{"item": {"id": "rose"}, "quantity": 9}]},
+      )
+      other_cancel = self.client.post(
+        f"/carts/{cart_id}/cancel", headers=self._headers("cw5", self._other())
+      )
+      other_checkout = self.client.post(
+        "/checkout-sessions", headers=self._headers("cw6", self._other()),
+        json={"cart_id": cart_id},
+      )
+      mine_checkout = self.client.post(
+        "/checkout-sessions", headers=self._headers("cw7", mine),
+        json={"cart_id": cart_id},
+      )
+      other_reuse = self.client.post(
+        "/checkout-sessions", headers=self._headers("cw8", self._other()),
+        json={"cart_id": cart_id},
+      )
+    self.assertEqual(owner.status_code, 200)
+    self.assertNotIn("_owner", owner.text)
+    for denied in (other, other_update, other_cancel, other_checkout, other_reuse):
+      self.assertEqual(denied.status_code, 404, denied.text)
+    self.assertEqual(mine_checkout.status_code, 201, mine_checkout.text)
+
   # ----- loyalty redemption ----------------------------------------------
 
   def test_split_payment_points_plus_card(self) -> None:
@@ -429,10 +760,12 @@ class LoyaltyTest(it.IntegrationTest):
 
   def test_points_need_identity_scope_and_account(self) -> None:
     with self.client:
-      checkout_id, _ = self._new_checkout("p1", self._token())
+      # Anonymous checkout (no owner): spending points still needs a buyer.
+      open_id, _ = self._new_checkout("p0", None)
       anonymous = self._complete(
-        checkout_id, "p2", None, [self._points(amount=100), self._card()]
+        open_id, "p2", None, [self._points(amount=100), self._card()]
       )
+      checkout_id, _ = self._new_checkout("p1", self._token())
       manage_only = self._complete(
         checkout_id,
         "p3",
@@ -445,9 +778,16 @@ class LoyaltyTest(it.IntegrationTest):
         self._token(loyalty_id=None),
         [self._points(amount=100), self._card()],
       )
+      stranger = self._complete(
+        checkout_id,
+        "p5",
+        self._other(),
+        [self._points(amount=100), self._card()],
+      )
     self.assertEqual(anonymous.status_code, 401)
     self.assertEqual(manage_only.status_code, 403)
     self.assertEqual(no_account.status_code, 402)
+    self.assertEqual(stranger.status_code, 404)
     self.assertEqual(self._balance(), START_POINTS)
 
   def test_account_comes_from_token_not_request(self) -> None:

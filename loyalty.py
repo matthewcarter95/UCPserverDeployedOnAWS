@@ -24,6 +24,7 @@ be tuned without a deploy.
 """
 
 import dataclasses
+import hashlib
 import os
 
 # Reverse-domain key for this merchant's program in the `loyalty` map and in
@@ -87,6 +88,43 @@ def reservation_id(idempotency_key: str, instrument_id: str) -> str:
 def earn_id(checkout_id: str) -> str:
   """Ledger id for an order's earn credit: one per checkout."""
   return f"earn:{checkout_id}"
+
+
+def spendable_instrument(
+  sub: str, balance_points: int, order_total: int
+) -> dict | None:
+  """The buyer's points as a business-owned, saved payment instrument.
+
+  Identity Linking lets a business return saved instruments in
+  `payment.instruments[]` on a user-authenticated response. The platform
+  treats `id` as opaque and submits this instrument at completion (with or
+  without an `amount`) to spend points as part of a split payment.
+
+  Returns None when there is nothing to spend or no order to apply it to.
+  """
+  if balance_points <= 0 or order_total <= 0:
+    return None
+  r = rules()
+  balance_cents = points_to_cents(balance_points)
+  max_cents = min(balance_cents, max_redeemable_cents(order_total))
+  # Whole points only.
+  max_cents -= max_cents % r.cents_per_point
+  digest = hashlib.sha256(f"loyalty:{sub}".encode()).hexdigest()[:12]
+  return {
+    "id": f"loyalty_{digest}",
+    "handler_id": HANDLER_ID,
+    "type": INSTRUMENT_TYPE,
+    "display": {
+      "program": PROGRAM_NAME,
+      "currency": {"name": CURRENCY_NAME, "code": CURRENCY_CODE},
+      "balance_points": balance_points,
+      "balance_cents": balance_cents,
+      "max_redeemable_points": cents_to_points(max_cents),
+      "max_redeemable_cents": max_cents,
+      "cents_per_point": r.cents_per_point,
+      "max_redeem_percent": r.max_redeem_percent,
+    },
+  }
 
 
 def membership(loyalty_id: str | None, order_total: int | None = None) -> dict | None:
